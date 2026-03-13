@@ -1,0 +1,24 @@
+[build-system]
+requires = ["scikit-build-core>=0.5", "pybind11>=2.11"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "pigzpp"
+version = "1.0.0"
+description = "Fast parallel gzip compression/decompression (C++ pigz rewrite with Python bindings)"
+requires-python = ">=3.8"
+license = {text = "Zlib"}
+
+[tool.scikit-build]
+cmake.build-type = "Release"
+cmake.args = [
+    "-DPIGZPP_BUILD_TESTS=OFF",
+    "-DPIGZPP_BUILD_BENCHMARKS=OFF",
+    "-DPIGZPP_BUILD_PYTHON=ON",
+    "-DPIGZPP_STATIC=OFF",
+]
+wheel.packages = []  # no pure-Python packages; the .so is installed directly
+
+[[tool.scikit-build.overrides]]
+if.platform-system = "linux"
+cmake.args = ["-DPIGZPP_USE_ZLIB_NG=ON"]
