@@ -1,0 +1,8 @@
+schemaVersion: 0.0.1
+isProduction: false
+accountableOwners:
+  service: e479dfa0-abac-424e-b1ac-20fd70f670e3
+routing:
+  defaultAreaPath:
+    org: machinetranslation
+    path: MachineTranslation
