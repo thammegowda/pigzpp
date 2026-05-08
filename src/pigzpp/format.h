@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -91,15 +92,16 @@ public:
     int fd() const { return fd_; }
 
 private:
-    static constexpr size_t BUF = 32768;
+    static constexpr size_t BUF = 262144; // 256 KB — fewer read syscalls at multi-GB/s speeds
     static constexpr size_t CEN = 42;
     static constexpr size_t EXT = BUF + CEN;
 
     int fd_;
     int procs_ = 1;
-    unsigned char in_buf_[EXT]{};
-    unsigned char in_buf2_[EXT]{}; // double-buffer for read-ahead
-    unsigned char* in_next_ = in_buf_;
+    // Heap-allocated to avoid ~512 KB on the stack with 256 KB BUF.
+    std::unique_ptr<unsigned char[]> in_buf_{new unsigned char[EXT]{}};
+    std::unique_ptr<unsigned char[]> in_buf2_{new unsigned char[EXT]{}}; // double-buffer for read-ahead
+    unsigned char* in_next_ = in_buf_.get();
     size_t in_left_ = 0;
     bool in_eof_ = false;
     bool in_short_ = false;

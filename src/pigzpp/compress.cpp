@@ -172,14 +172,10 @@ struct Job {
 
 Compressor::Compressor(const Config& cfg) : cfg_(cfg) {
 #ifdef PIGZPP_USE_ISAL
-    // When ISA-L is the engine, use larger blocks for parallel compression.
-    // ISA-L compresses so fast (~3-5 GB/s per core) that 128KB blocks create
-    // excessive per-block overhead (flush, dict set, reset).  1MB blocks
-    // amortize this overhead and approach igzip's throughput.
+    // The ISA-L block size is set adaptively in compress() once the file
+    // size is known.  Here we just record that the user didn't override.
     int lvl = cfg_.level == -1 ? 6 : cfg_.level;
-    if (use_isal(lvl) && !cfg_.rsync && cfg_.block == DEFAULT_BLOCK_SIZE) {
-        cfg_.block = 1024 * 1024; // 1 MB
-    }
+    (void)lvl;
 #endif
     shift_ = crc_combine_gen(cfg_.block);
 }
@@ -192,18 +188,43 @@ void Compressor::compress(int in_fd, int out_fd) {
 #endif
 
 #ifdef PIGZPP_USE_ISAL
-    // With ISA-L's per-core speed, parallel overhead can exceed gains unless
-    // there are enough blocks to keep all threads busy.  When the input is a
-    // seekable file, cap procs so each thread gets at least 2 blocks.
-    if (cfg_.procs > 1) {
-        off_t fsize = lseek(in_fd, 0, SEEK_END);
-        if (fsize > 0) {
-            lseek(in_fd, 0, SEEK_SET);
-            int useful_threads = static_cast<int>(
-                static_cast<uint64_t>(fsize) / (cfg_.block * 2));
-            if (useful_threads < 1) useful_threads = 1;
-            if (useful_threads < cfg_.procs)
-                cfg_.procs = useful_threads;
+    {
+        int lvl = cfg_.level == -1 ? 6 : cfg_.level;
+        // Adaptively size blocks for ISA-L.
+        // ISA-L compresses at ~3-5 GB/s per core, so larger blocks amortize
+        // per-block overhead (flush, dict set, reset).  But we need enough
+        // blocks (>= 2 per thread) to keep all threads busy.
+        if (use_isal(lvl) && !cfg_.rsync && cfg_.block == DEFAULT_BLOCK_SIZE) {
+            off_t fsize = lseek(in_fd, 0, SEEK_END);
+            if (fsize > 0) {
+                lseek(in_fd, 0, SEEK_SET);
+                // Target: each thread gets at least 4 blocks for good pipelining.
+                // Start with 2 MB, shrink if needed to ensure enough blocks.
+                size_t block = 2 * 1024 * 1024; // 2 MB ideal
+                size_t min_blocks = static_cast<size_t>(cfg_.procs) * 4;
+                while (block > DEFAULT_BLOCK_SIZE &&
+                       static_cast<uint64_t>(fsize) / block < min_blocks) {
+                    block /= 2;
+                }
+                cfg_.block = block;
+            } else {
+                // Not seekable (pipe): use 1 MB as a safe default
+                cfg_.block = 1024 * 1024;
+            }
+            shift_ = crc_combine_gen(cfg_.block);
+        }
+
+        // Cap thread count so each thread gets at least 2 blocks.
+        if (cfg_.procs > 1) {
+            off_t fsize = lseek(in_fd, 0, SEEK_END);
+            if (fsize > 0) {
+                lseek(in_fd, 0, SEEK_SET);
+                int useful_threads = static_cast<int>(
+                    static_cast<uint64_t>(fsize) / (cfg_.block * 2));
+                if (useful_threads < 1) useful_threads = 1;
+                if (useful_threads < cfg_.procs)
+                    cfg_.procs = useful_threads;
+            }
         }
     }
 #endif
@@ -526,10 +547,13 @@ void Compressor::parallel_compress(int in_fd, int out_fd) {
     std::deque<std::shared_ptr<Job>> compress_queue;
     bool compress_done = false;
 
+    // Slot-based write queue: compress workers store jobs by seq number,
+    // write thread reads sequentially.  Avoids sorted-insert O(n) cost
+    // and reduces lock contention (one atomic store vs mutex + deque insert).
+    const int write_slots = cfg_.procs * 4;  // ring buffer capacity
+    std::vector<std::shared_ptr<Job>> write_ring(write_slots);
     std::mutex write_mu;
     std::condition_variable write_cv;
-    std::deque<std::shared_ptr<Job>> write_queue;
-    bool write_done = false;
 
     // Write header (before launching threads)
     size_t head = put_header(out_fd, cfg_);
@@ -742,14 +766,11 @@ void Compressor::parallel_compress(int in_fd, int out_fd) {
                 }
             } while (left);
 
-            // Insert job into write queue FIRST so write thread can start
+            // Insert job into write ring slot so write thread can start
             // writing compressed data while we compute the check value.
             {
                 std::lock_guard lock(write_mu);
-                auto it = write_queue.begin();
-                while (it != write_queue.end() && (*it)->seq < job->seq)
-                    ++it;
-                write_queue.insert(it, job);
+                write_ring[static_cast<size_t>(job->seq % write_slots)] = job;
                 write_cv.notify_one();
             }
 
@@ -786,14 +807,12 @@ void Compressor::parallel_compress(int in_fd, int out_fd) {
             std::shared_ptr<Job> job;
             {
                 std::unique_lock lock(write_mu);
+                auto& slot = write_ring[static_cast<size_t>(write_seq % write_slots)];
                 write_cv.wait(lock, [&] {
-                    return (!write_queue.empty() && write_queue.front()->seq == write_seq) ||
-                           write_done;
+                    return slot != nullptr;
                 });
-                if (write_queue.empty() && write_done) break;
-                if (write_queue.empty() || write_queue.front()->seq != write_seq) continue;
-                job = write_queue.front();
-                write_queue.pop_front();
+                job = std::move(slot);
+                slot = nullptr;
             }
 
             // Track lengths

@@ -13,6 +13,7 @@
 #include <climits>
 #include <condition_variable>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
@@ -25,7 +26,7 @@
 
 namespace pigzpp {
 
-static constexpr unsigned OUTSIZE = 32768U;
+static constexpr unsigned OUTSIZE = 262144U; // 256 KB — reduce push() calls & memcpy overhead
 static constexpr uint64_t LOW32 = 0xffffffff;
 
 // --- Parallel output handler (write + check threads) ---
@@ -35,7 +36,8 @@ static constexpr uint64_t LOW32 = 0xffffffff;
 
 struct ParallelOutput {
     // Buffer: inflate output is copied here for worker threads.
-    unsigned char out_copy[OUTSIZE];
+    // Heap-allocated to avoid large stack frames with 256 KB OUTSIZE.
+    std::unique_ptr<unsigned char[]> out_copy{new unsigned char[OUTSIZE]};
     std::atomic<size_t> out_len{0};
 
     // State: 0=idle, 1=work, 2=done(sentinel)
@@ -81,7 +83,7 @@ struct ParallelOutput {
         out_len.store(len, std::memory_order_relaxed);
         if (len) {
             out_tot += len;
-            std::memcpy(out_copy, buf, len);
+            std::memcpy(out_copy.get(), buf, len);
         }
 
         // Release to workers (write fence ensures memcpy is visible)
@@ -104,7 +106,7 @@ private:
                 std::this_thread::yield();
             size_t len = out_len.load(std::memory_order_relaxed);
             if (len && !testing)
-                writen(out_fd, out_copy, len);
+                writen(out_fd, out_copy.get(), len);
             write_state.store(0, std::memory_order_release);
             if (len == 0) break;
         }
@@ -116,7 +118,7 @@ private:
                 std::this_thread::yield();
             size_t len = out_len.load(std::memory_order_relaxed);
             if (len)
-                out_check = check(form, out_check, out_copy, len);
+                out_check = check(form, out_check, out_copy.get(), len);
             check_state.store(0, std::memory_order_release);
             if (len == 0) break;
         }

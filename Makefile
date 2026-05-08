@@ -13,13 +13,20 @@
 
 NPROC  ?= $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 SIZES  ?= 16 128 1024 8192
-ITERS  ?= 1
-THREADS ?= 1 4
+ITERS  ?= 3
+THREADS ?= 1 4 8 16
 
 BUILD_DIR       := build
 DEBUG_DIR       := build-debug
 BENCH_DATA_DIR  := build/bench_data
 PIGZPP_BIN      := $(BUILD_DIR)/pigzpp
+
+# ─── Setup ────────────────────────────────────────────────────────────────────
+
+.PHONY: setup
+
+setup:
+	@bash scripts/setup.sh
 
 # ─── Build ────────────────────────────────────────────────────────────────────
 
@@ -71,6 +78,7 @@ bench-setup:
 	@echo "\nInstalling Python benchmark packages..."
 	pip install --quiet zlib-ng isal pytest 2>/dev/null || \
 		echo "Warning: some packages failed to install (optional)"
+# sudo apt install isal
 	@echo "✓ Benchmark setup complete"
 
 # Binary benchmark: gzip vs pigz vs pigzpp
@@ -87,9 +95,29 @@ bench: bench-bin bench-py
 
 # ─── Python Package ──────────────────────────────────────────────────────────
 
-.PHONY: install-py
+.PHONY: install-py profile
 
 install-py:
 	pip install .
 	@echo "✓ pigzpp Python package installed"
 	python -c "import pigzpp; print('pigzpp:', dir(pigzpp))"
+
+# ─── Profiling ────────────────────────────────────────────────────────────────
+
+PROFILE_SIZE ?= 1024
+PROFILE_DATA := $(BENCH_DATA_DIR)/$(PROFILE_SIZE)MB.txt
+
+profile: build
+	@mkdir -p $(BENCH_DATA_DIR)
+	@if [ ! -f $(PROFILE_DATA) ]; then \
+		python3 benchmarks/gen_data.py --sizes $(PROFILE_SIZE) --data-dir $(BENCH_DATA_DIR); \
+	fi
+	@echo "==> Profiling compression ($(PROFILE_SIZE) MB) ..."
+	perf record -g -o build/perf-compress.data -- $(PIGZPP_BIN) -c $(PROFILE_DATA) > /dev/null
+	perf report -i build/perf-compress.data --no-children --percent-limit 1 | head -60
+	@echo "\n==> Profiling decompression ..."
+	$(PIGZPP_BIN) -c $(PROFILE_DATA) > $(BENCH_DATA_DIR)/profile_tmp.gz
+	perf record -g -o build/perf-decompress.data -- $(PIGZPP_BIN) -dc $(BENCH_DATA_DIR)/profile_tmp.gz > /dev/null
+	perf report -i build/perf-decompress.data --no-children --percent-limit 1 | head -60
+	@rm -f $(BENCH_DATA_DIR)/profile_tmp.gz
+	@echo "\n✓ Profiles saved: build/perf-compress.data, build/perf-decompress.data"

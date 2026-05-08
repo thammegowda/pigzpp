@@ -253,7 +253,7 @@ void InputReader::load_read_worker() {
             std::this_thread::yield();
         if (load_state_.load(std::memory_order_acquire) > 1)
             break; // exit
-        in_len_ = readn(fd_, in_which_ ? in_buf_ : in_buf2_, BUF);
+        in_len_ = readn(fd_, in_which_ ? in_buf_.get() : in_buf2_.get(), BUF);
         load_state_.store(0, std::memory_order_release);
         if (in_len_ < BUF) break; // EOF, thread exits
     }
@@ -270,7 +270,7 @@ void InputReader::reset() {
     in_eof_ = false;
     in_short_ = false;
     in_tot_ = 0;
-    in_next_ = in_buf_;
+    in_next_ = in_buf_.get();
 }
 
 void InputReader::close() {
@@ -310,7 +310,7 @@ size_t InputReader::load() {
         load_wait();
 
         // Use the buffer that was just filled
-        in_next_ = in_which_ ? in_buf_ : in_buf2_;
+        in_next_ = in_which_ ? in_buf_.get() : in_buf2_.get();
         in_left_ = in_len_;
 
         if (in_len_ == BUF) {
@@ -324,7 +324,7 @@ size_t InputReader::load() {
         }
     } else {
         // Single-threaded: simple read
-        in_left_ = readn(fd_, in_next_ = in_buf_, BUF);
+        in_left_ = readn(fd_, in_next_ = in_buf_.get(), BUF);
     }
 
     if (in_left_ < BUF) {

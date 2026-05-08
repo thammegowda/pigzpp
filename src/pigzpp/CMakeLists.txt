@@ -21,7 +21,8 @@ endif()
 
 target_compile_options(pigzpp_lib PRIVATE
     -Wall -Wextra -Wpedantic -Wcast-qual
-    $<$<CONFIG:Release>:-O3 -DNDEBUG -funroll-loops -fomit-frame-pointer>
+    $<$<CONFIG:Release>:-O3 -DNDEBUG -funroll-loops -fomit-frame-pointer
+        -falign-functions=32 -falign-loops=32>
     $<$<CONFIG:Debug>:-g -fsanitize=address,undefined>
 )
 target_link_options(pigzpp_lib PUBLIC
@@ -38,7 +39,8 @@ target_link_libraries(pigzpp_exe PRIVATE pigzpp_lib)
 
 target_compile_options(pigzpp_exe PRIVATE
     -Wall -Wextra -Wpedantic
-    $<$<CONFIG:Release>:-O3 -DNDEBUG -funroll-loops -fomit-frame-pointer>
+    $<$<CONFIG:Release>:-O3 -DNDEBUG -funroll-loops -fomit-frame-pointer
+        -falign-functions=32 -falign-loops=32>
     $<$<CONFIG:Debug>:-g -fsanitize=address,undefined>
 )
 
