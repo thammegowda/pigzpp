@@ -7,6 +7,7 @@
 #   make bench-setup    Create benchmark data files, install Python packages
 #   make bench-bin      Benchmark CLI: gzip vs pigz vs pigzpp (requires hyperfine)
 #   make bench-py       Benchmark Python: gzip vs zlib-ng vs isal vs pigzpp
+#   make bench-png      Benchmark PNG encoding vs Pillow baseline
 #   make bench          Run all benchmarks
 #   make install-py     Install pigzpp Python package (pip install)
 #   make clean          Remove build artifacts
@@ -66,11 +67,11 @@ test-cpp: build
 	cd $(BUILD_DIR) && ctest --output-on-failure -j$(NPROC)
 
 test-py: build
-	PYTHONPATH=$(CURDIR)/$(BUILD_DIR) python -m pytest tests/test_python.py -v
+	PYTHONPATH=$(CURDIR)/$(BUILD_DIR) python -m pytest tests/test_python.py tests/test_png.py -v
 
 # ─── Benchmarks ───────────────────────────────────────────────────────────────
 
-.PHONY: bench-setup bench-bin bench-py bench
+.PHONY: bench-setup bench-bin bench-py bench-png bench
 
 # Generate test data files and install Python benchmark dependencies
 bench-setup:
@@ -90,8 +91,12 @@ bench-bin: bench-setup
 bench-py: bench-setup
 	PYTHONPATH=$(CURDIR)/$(BUILD_DIR) python benchmarks/bench_python.py --sizes $(SIZES) --iterations $(ITERS)
 
+# PNG benchmark: pigzpp.png and OpenCV against Pillow baseline
+bench-png: build
+	PYTHONPATH=$(CURDIR)/$(BUILD_DIR) python benchmarks/bench_png.py --verify --out $(BUILD_DIR)/png-bench
+
 # All benchmarks
-bench: bench-bin bench-py
+bench: bench-bin bench-py bench-png
 
 # ─── Python Package ──────────────────────────────────────────────────────────
 

@@ -5,8 +5,9 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "pigzpp"
 version = "1.0.0"
-description = "Fast parallel gzip compression/decompression (C++ pigz rewrite with Python bindings)"
+description = "Fast gzip/zlib compression and PNG encode/decode helpers (C++23 with Python bindings)"
 requires-python = ">=3.8"
+dependencies = ["numpy>=1.21"]
 license = {text = "Zlib"}
 
 [tool.scikit-build]

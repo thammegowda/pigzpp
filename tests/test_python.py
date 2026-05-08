@@ -3,6 +3,7 @@
 import gzip
 import os
 import tempfile
+import zlib
 
 import pytest
 
@@ -29,6 +30,16 @@ class TestCompressDecompress:
         data = b"test data for gzip compat"
         compressed = pigzpp.compress(data)
         assert gzip.decompress(compressed) == data
+
+    def test_compress_zlib_produces_valid_zlib(self):
+        data = b"test data for zlib compat" * 100
+        compressed = pigzpp.compress_zlib(data, level=1)
+        assert zlib.decompress(compressed) == data
+
+    def test_compress_raw_produces_valid_raw_deflate(self):
+        data = b"test data for raw deflate compat" * 100
+        compressed = pigzpp.compress_raw(data, level=1)
+        assert zlib.decompress(compressed, wbits=-15) == data
 
     def test_decompress_stdlib_gzip(self):
         data = b"created by stdlib gzip"

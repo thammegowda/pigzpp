@@ -7,3 +7,4 @@
 #include "config.h"
 #include "compress.h"
 #include "decompress.h"
+#include "png.h"

@@ -14,6 +14,7 @@ add_executable(pigzpp_tests
     test_compress_decompress.cpp
     test_cli.cpp
     test_format.cpp
+    test_png_cpp.cpp
 )
 target_link_libraries(pigzpp_tests PRIVATE pigzpp_lib GTest::gtest_main)
 target_compile_options(pigzpp_tests PRIVATE -Wall -Wextra)

@@ -4,7 +4,7 @@
 >
 > Read the full writeup: **[I Let Two AI Agents Race to Modernize pigz](https://gowda.ai/posts/2026/03/pigzpp-with-agents/)**
 
-**pigzpp** is a clean-room C++23 rewrite of [pigz](https://zlib.net/pigz/) (Parallel Implementation of GZip) by Mark Adler. It is a drop-in replacement for `pigz`/`gzip` that is **faster**, **thread-safe**, and usable as both a CLI tool and a library with Python bindings.
+**pigzpp** is a clean-room C++23 rewrite of [pigz](https://zlib.net/pigz/) (Parallel Implementation of GZip) by Mark Adler. It is a drop-in replacement for `pigz`/`gzip` that is **faster**, **thread-safe**, and usable as both a CLI tool and a library with Python bindings. It also includes a compact PNG encoder/decoder for grayscale, grayscale+alpha, RGB, and RGBA `uint8` images, using the same accelerated DEFLATE stack for PNG `IDAT` data.
 
 ## Why
 
@@ -14,6 +14,7 @@ pigz is one of those essential tools — if you've ever compressed GBs to TBs of
 - **Faster** — uses [zlib-ng](https://github.com/zlib-ng/zlib-ng) with SIMD optimizations instead of vanilla zlib
 - **Modern C++23** — `std::jthread`, exceptions, RAII, no `setjmp`/`longjmp`
 - **Python bindings** — `pigzpp.open()` / `pigzpp.compress()` via pybind11
+- **PNG helpers** — `pigzpp.png.compress()` / `pigzpp.png.decompress()` / `pigzpp.png.save()` / `pigzpp.png.load()` for grayscale, grayscale+alpha, RGB, and RGBA image buffers
 - **Fully compatible** — compress with pigzpp, decompress with gzip/pigz, and vice versa
 
 ## Performance
@@ -58,6 +59,7 @@ make test           # Run C++ and Python tests
 make bench          # Run all benchmarks (CLI + Python)
 make bench-bin      # Benchmark CLI: gzip vs pigz vs pigzpp vs igzip
 make bench-py       # Benchmark Python: gzip vs zlib-ng vs isal vs pigzpp
+make bench-png      # Benchmark PNG encoding vs Pillow baseline
 make debug          # Debug build with sanitizers
 make clean          # Remove build artifacts
 ```
@@ -96,6 +98,36 @@ compressed = pigzpp.compress(b"raw data", level=6, threads=0)
 original = pigzpp.decompress(compressed)
 ```
 
+### Python PNG
+
+```python
+import pigzpp as pig
+
+# Grayscale HxW and grayscale+alpha/RGB/RGBA HxWxC uint8 arrays are accepted directly.
+png_bytes = pig.png.compress(image, preset="balanced")
+image = pig.png.decompress_array(png_bytes)  # NumPy uint8 array, HxW or HxWxC
+image = pig.png.decompress(png_bytes, result="numpy")
+
+pig.png.save("out.png", image, preset="balanced")
+image = pig.png.load("out.png")  # result="numpy" is the default for load()
+
+# Bytes API is also available for callers that do not want arrays.
+pixels, shape = pig.png.decompress(png_bytes)  # shape is (width, height, channels)
+pixels, shape = pig.png.load("out.png", result="bytes")
+```
+
+`pigzpp.png` currently targets fast lossless grayscale/grayscale+alpha/RGB/RGBA image buffers. It writes standard 8-bit non-interlaced PNG files, validates chunk CRCs on decode, and supports PNG filters (`none`, `sub`, `up`, `average`, `paeth`, `adaptive-fast`, `adaptive-all`) plus DEFLATE strategies (`default`, `rle`, `huffman`, `fixed`, `filtered`). Presets are available as `fast`, `balanced`, and `small`; `fast` uses `level=1`, `strategy="rle"`, and `filter="up"`, `balanced` uses `level=1`, `strategy="rle"`, and `filter="adaptive-fast"`, while `small` uses `level=9`, `strategy="filtered"`, and `filter="adaptive-all"`. Explicit `level`, `strategy`, or `filter` arguments override the selected preset. With ISA-L enabled, PNG decode uses ISA-L when possible; PNG encode uses ISA-L for `strategy="default"` and falls back to zlib-ng for other zlib-style strategies.
+
+PNG benchmarks compare `pigzpp.png`, OpenCV, and Pillow modes against `PIL.Image.save(..., format="PNG")`, the common Python PNG baseline. A `*` in the benchmark output marks each library's default mode. Benchmarks can be run on RGB, grayscale, or binary mask inputs:
+
+```bash
+python benchmarks/bench_png.py --mode rgb --verify
+python benchmarks/bench_png.py --mode gray --verify
+python benchmarks/bench_png.py --mode mask --verify
+```
+
+For a load/manipulate/save example, see `scripts/sample_png_rgb_save.py`.
+
 ## Tests
 
 ```bash
@@ -112,6 +144,7 @@ pigzpp/
 │   ├── config.h/cpp      Configuration (replaces global struct g)
 │   ├── compress.h/cpp    Parallel compressor
 │   ├── decompress.h/cpp  Decompressor with parallel CRC
+│   ├── png.h/cpp         PNG encode/decode helpers
 │   ├── crc.h/cpp         CRC-32/Adler-32 with optimized combine
 │   ├── pool.h/cpp        Thread-safe buffer pool (RAII)
 │   ├── format.h/cpp      Gzip/zlib header/trailer parsing
@@ -137,6 +170,7 @@ pigzpp uses the same [zlib license](LICENSE) as the original pigz.
 ### Third-party libraries
 
 - [zlib-ng](https://github.com/zlib-ng/zlib-ng) — SIMD-optimized zlib replacement (zlib license)
+- [ISA-L](https://github.com/intel/isa-l) — accelerated DEFLATE/Adler-32 for supported builds (BSD license)
 - [pybind11](https://github.com/pybind/pybind11) — C++/Python bindings (BSD license)
 - [zopfli](https://github.com/google/zopfli) — optimal DEFLATE compressor for level 11 (Apache 2.0)
 - [GoogleTest](https://github.com/google/googletest) — testing framework (BSD license)

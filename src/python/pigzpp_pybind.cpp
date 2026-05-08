@@ -2,11 +2,16 @@
 // API mirrors Python's gzip.open() with context manager support.
 
 #include <pybind11/pybind11.h>
+#include <pybind11/numpy.h>
 #include <pybind11/stl.h>
+
+#include "png.h"
 
 #include <zlib.h>
 
 #include <cstring>
+#include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -156,26 +161,16 @@ arrange_output_buffer(z_stream *zst, PyObject **buffer, Py_ssize_t length)
 }
 
 static PyObject *
-pigzpp_compress(PyObject * /*module*/, PyObject *args, PyObject *kwargs)
+compress_bytes(const Py_buffer &buf, int level, int window_bits, int strategy)
 {
-    static const char *kwlist[] = {"data", "level", NULL};
-    Py_buffer buf;
-    int level = 6;
-
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "y*|i",
-                                     const_cast<char**>(kwlist),
-                                     &buf, &level))
-        return NULL;
-
     z_stream strm{};
     strm.zalloc = Z_NULL;
     strm.zfree = Z_NULL;
     strm.opaque = Z_NULL;
 
     int ret = deflateInit2(&strm, level == -1 ? 6 : level, Z_DEFLATED,
-                           15 + 16, 8, Z_DEFAULT_STRATEGY);
+                           window_bits, 8, strategy);
     if (ret != Z_OK) {
-        PyBuffer_Release(&buf);
         PyErr_SetString(PyExc_RuntimeError, "deflateInit2 failed");
         return NULL;
     }
@@ -187,7 +182,6 @@ pigzpp_compress(PyObject * /*module*/, PyObject *args, PyObject *kwargs)
     PyObject *result = PyBytes_FromStringAndSize(NULL, bound);
     if (!result) {
         deflateEnd(&strm);
-        PyBuffer_Release(&buf);
         return NULL;
     }
 
@@ -197,8 +191,6 @@ pigzpp_compress(PyObject * /*module*/, PyObject *args, PyObject *kwargs)
     Py_BEGIN_ALLOW_THREADS
     ret = deflate(&strm, Z_FINISH);
     Py_END_ALLOW_THREADS
-
-    PyBuffer_Release(&buf);
 
     if (ret != Z_STREAM_END) {
         deflateEnd(&strm);
@@ -213,6 +205,59 @@ pigzpp_compress(PyObject * /*module*/, PyObject *args, PyObject *kwargs)
     if (_PyBytes_Resize(&result, out_size) < 0)
         return NULL;
 
+    return result;
+}
+
+static PyObject *
+pigzpp_compress(PyObject * /*module*/, PyObject *args, PyObject *kwargs)
+{
+    static const char *kwlist[] = {"data", "level", NULL};
+    Py_buffer buf;
+    int level = 6;
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "y*|i",
+                                     const_cast<char**>(kwlist),
+                                     &buf, &level))
+        return NULL;
+
+    PyObject *result = compress_bytes(buf, level, 15 + 16, Z_DEFAULT_STRATEGY);
+    PyBuffer_Release(&buf);
+    return result;
+}
+
+static PyObject *
+pigzpp_compress_zlib(PyObject * /*module*/, PyObject *args, PyObject *kwargs)
+{
+    static const char *kwlist[] = {"data", "level", "strategy", NULL};
+    Py_buffer buf;
+    int level = 6;
+    int strategy = Z_DEFAULT_STRATEGY;
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "y*|ii",
+                                     const_cast<char**>(kwlist),
+                                     &buf, &level, &strategy))
+        return NULL;
+
+    PyObject *result = compress_bytes(buf, level, 15, strategy);
+    PyBuffer_Release(&buf);
+    return result;
+}
+
+static PyObject *
+pigzpp_compress_raw(PyObject * /*module*/, PyObject *args, PyObject *kwargs)
+{
+    static const char *kwlist[] = {"data", "level", "strategy", NULL};
+    Py_buffer buf;
+    int level = 6;
+    int strategy = Z_DEFAULT_STRATEGY;
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "y*|ii",
+                                     const_cast<char**>(kwlist),
+                                     &buf, &level, &strategy))
+        return NULL;
+
+    PyObject *result = compress_bytes(buf, level, -15, strategy);
+    PyBuffer_Release(&buf);
     return result;
 }
 
@@ -335,6 +380,18 @@ static PyMethodDef pigzpp_c_methods[] = {
      "Args:\n"
      "    data: bytes-like object to compress\n"
      "    level: compression level 0-9 (default 6)\n"},
+    {"compress_zlib", (PyCFunction)pigzpp_compress_zlib, METH_VARARGS | METH_KEYWORDS,
+     "Compress bytes and return zlib-wrapped DEFLATE bytes, suitable for PNG IDAT.\n\n"
+     "Args:\n"
+     "    data: bytes-like object to compress\n"
+     "    level: compression level 0-9 (default 6)\n"
+     "    strategy: zlib strategy integer (default Z_DEFAULT_STRATEGY)\n"},
+    {"compress_raw", (PyCFunction)pigzpp_compress_raw, METH_VARARGS | METH_KEYWORDS,
+     "Compress bytes and return raw DEFLATE bytes with no gzip or zlib wrapper.\n\n"
+     "Args:\n"
+     "    data: bytes-like object to compress\n"
+     "    level: compression level 0-9 (default 6)\n"
+     "    strategy: zlib strategy integer (default Z_DEFAULT_STRATEGY)\n"},
     {"decompress", (PyCFunction)pigzpp_decompress, METH_VARARGS | METH_KEYWORDS,
      "Decompress gzip-compressed bytes.\n\n"
      "Args:\n"
@@ -344,9 +401,232 @@ static PyMethodDef pigzpp_c_methods[] = {
     {NULL, NULL, 0, NULL}
 };
 
+static bool is_c_contiguous_image(const py::buffer_info& info) {
+    if (info.ndim == 2)
+        return info.strides[1] == 1 && info.strides[0] == info.shape[1];
+    if (info.ndim != 3)
+        return false;
+    ssize_t channels = info.shape[2];
+    ssize_t width = info.shape[1];
+    return info.strides[2] == 1 &&
+           info.strides[1] == channels &&
+           info.strides[0] == width * channels;
+}
+
+struct PngInput {
+    const uint8_t* pixels = nullptr;
+    size_t size = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint8_t channels = 0;
+};
+
+static pigzpp::png::EncodeOptions resolve_png_options(
+    const std::string& preset,
+    const std::optional<int>& level,
+    const std::optional<std::string>& strategy,
+    const std::optional<std::string>& filter
+) {
+    pigzpp::png::EncodeOptions options = pigzpp::png::preset_options(preset);
+    if (level) options.level = *level;
+    if (strategy) options.strategy = pigzpp::png::parse_strategy(*strategy);
+    if (filter) options.filter = pigzpp::png::parse_filter_mode(*filter);
+    return options;
+}
+
+static std::string path_to_string(const py::object& path) {
+    return py::module_::import("os").attr("fspath")(path).cast<std::string>();
+}
+
+static PngInput resolve_png_input(
+    const py::buffer_info& info,
+    const std::optional<uint32_t>& width,
+    const std::optional<uint32_t>& height,
+    const std::optional<uint8_t>& channels
+) {
+    if (info.itemsize != 1)
+        throw std::invalid_argument("PNG input must be a uint8/bytes buffer");
+
+    PngInput input;
+    input.pixels = static_cast<const uint8_t*>(info.ptr);
+    input.size = static_cast<size_t>(info.size);
+    input.width = width.value_or(0);
+    input.height = height.value_or(0);
+    input.channels = channels.value_or(0);
+
+    if (info.ndim == 2) {
+        if (!is_c_contiguous_image(info))
+            throw std::invalid_argument("PNG grayscale image input must be C-contiguous HxW uint8 data");
+        input.height = height.value_or(static_cast<uint32_t>(info.shape[0]));
+        input.width = width.value_or(static_cast<uint32_t>(info.shape[1]));
+        input.channels = channels.value_or(1);
+    } else if (info.ndim == 3) {
+        if (!is_c_contiguous_image(info))
+            throw std::invalid_argument("PNG image input must be C-contiguous HxWxC uint8 data");
+        input.height = height.value_or(static_cast<uint32_t>(info.shape[0]));
+        input.width = width.value_or(static_cast<uint32_t>(info.shape[1]));
+        input.channels = channels.value_or(static_cast<uint8_t>(info.shape[2]));
+    } else if (info.ndim != 1) {
+        throw std::invalid_argument("PNG input must be raw bytes, HxW grayscale, or HxWxC uint8 image data");
+    }
+    return input;
+}
+
+static py::bytes png_compress(
+    py::buffer data,
+    std::optional<uint32_t> width,
+    std::optional<uint32_t> height,
+    std::optional<uint8_t> channels,
+    const std::optional<int>& level,
+    const std::optional<std::string>& strategy,
+    const std::optional<std::string>& filter,
+    const std::string& preset,
+    const std::optional<size_t>& idat_chunk_size
+) {
+    py::buffer_info info = data.request();
+    PngInput input = resolve_png_input(info, width, height, channels);
+    pigzpp::png::EncodeOptions options = resolve_png_options(preset, level, strategy, filter);
+    if (idat_chunk_size) options.idat_chunk_size = *idat_chunk_size;
+    std::vector<uint8_t> encoded;
+    {
+        py::gil_scoped_release release;
+        encoded = pigzpp::png::encode_buffer(
+            input.pixels,
+            input.size,
+            input.width,
+            input.height,
+            input.channels,
+            options
+        );
+    }
+    return py::bytes(reinterpret_cast<const char*>(encoded.data()), encoded.size());
+}
+
+static void png_save(
+    py::object path,
+    py::buffer data,
+    std::optional<uint32_t> width,
+    std::optional<uint32_t> height,
+    std::optional<uint8_t> channels,
+    const std::optional<int>& level,
+    const std::optional<std::string>& strategy,
+    const std::optional<std::string>& filter,
+    const std::string& preset,
+    const std::optional<size_t>& idat_chunk_size
+) {
+    std::string filename = path_to_string(path);
+    py::buffer_info info = data.request();
+    PngInput input = resolve_png_input(info, width, height, channels);
+    pigzpp::png::EncodeOptions options = resolve_png_options(preset, level, strategy, filter);
+    if (idat_chunk_size) options.idat_chunk_size = *idat_chunk_size;
+    {
+        py::gil_scoped_release release;
+        pigzpp::png::save_buffer(
+            filename,
+            input.pixels,
+            input.size,
+            input.width,
+            input.height,
+            input.channels,
+            options
+        );
+    }
+}
+
+static py::tuple png_image_to_bytes_tuple(const pigzpp::png::Image& image) {
+    py::bytes pixels(reinterpret_cast<const char*>(image.pixels.data()), image.pixels.size());
+    return py::make_tuple(pixels, py::make_tuple(image.width, image.height, image.channels));
+}
+
+static py::array png_image_to_array(pigzpp::png::Image&& image) {
+    auto pixels = std::make_unique<std::vector<uint8_t>>(std::move(image.pixels));
+    uint8_t* data = pixels->data();
+    py::capsule owner(pixels.release(), [](void* value) {
+        delete static_cast<std::vector<uint8_t>*>(value);
+    });
+
+    ssize_t height = static_cast<ssize_t>(image.height);
+    ssize_t width = static_cast<ssize_t>(image.width);
+    ssize_t channels = static_cast<ssize_t>(image.channels);
+    if (image.channels == 1) {
+        return py::array(
+            py::dtype::of<uint8_t>(),
+            {height, width},
+            {width, ssize_t{1}},
+            data,
+            owner
+        );
+    }
+    return py::array(
+        py::dtype::of<uint8_t>(),
+        {height, width, channels},
+        {width * channels, channels, ssize_t{1}},
+        data,
+        owner
+    );
+}
+
+static py::object png_image_result(pigzpp::png::Image&& image, const std::string& result) {
+    if (result == "numpy" || result == "array" || result == "ndarray")
+        return png_image_to_array(std::move(image));
+    if (result == "bytes" || result == "tuple" || result == "raw")
+        return png_image_to_bytes_tuple(image);
+    throw std::invalid_argument("PNG result must be 'numpy' or 'bytes'");
+}
+
+static py::object png_decompress(py::buffer data, const std::string& result) {
+    py::buffer_info info = data.request();
+    if (info.itemsize != 1)
+        throw std::invalid_argument("PNG data must be a uint8/bytes buffer");
+    if (info.ndim != 1)
+        throw std::invalid_argument("PNG data must be a one-dimensional bytes buffer");
+
+    pigzpp::png::Image image;
+    {
+        py::gil_scoped_release release;
+        image = pigzpp::png::decode(static_cast<const uint8_t*>(info.ptr), static_cast<size_t>(info.size));
+    }
+    return png_image_result(std::move(image), result);
+}
+
+static py::array png_decompress_array(py::buffer data) {
+    py::buffer_info info = data.request();
+    if (info.itemsize != 1)
+        throw std::invalid_argument("PNG data must be a uint8/bytes buffer");
+    if (info.ndim != 1)
+        throw std::invalid_argument("PNG data must be a one-dimensional bytes buffer");
+
+    pigzpp::png::Image image;
+    {
+        py::gil_scoped_release release;
+        image = pigzpp::png::decode(static_cast<const uint8_t*>(info.ptr), static_cast<size_t>(info.size));
+    }
+    return png_image_to_array(std::move(image));
+}
+
+static py::object png_load(py::object path, const std::string& result) {
+    std::string filename = path_to_string(path);
+    pigzpp::png::Image image;
+    {
+        py::gil_scoped_release release;
+        image = pigzpp::png::load(filename);
+    }
+    return png_image_result(std::move(image), result);
+}
+
+static py::array png_load_array(py::object path) {
+    std::string filename = path_to_string(path);
+    pigzpp::png::Image image;
+    {
+        py::gil_scoped_release release;
+        image = pigzpp::png::load(filename);
+    }
+    return png_image_to_array(std::move(image));
+}
+
 
 PYBIND11_MODULE(pigzpp, m) {
-    m.doc() = "pigzpp: Fast parallel gzip compression (C++23 library with zlib-ng)";
+    m.doc() = "pigzpp: Fast gzip/zlib compression and PNG helpers (C++23 library with zlib-ng/ISA-L)";
 
     // File-based API: pigzpp.open() — mirrors gzip.open()
     py::class_<GzFile>(m, "open",
@@ -381,4 +661,61 @@ PYBIND11_MODULE(pigzpp, m) {
             throw py::error_already_set();
         }
     }
+
+    auto png_module = m.def_submodule("png", "Fast PNG encode/decode helpers");
+    png_module.def(
+        "compress",
+        &png_compress,
+        py::arg("data"),
+        py::arg("width") = std::nullopt,
+        py::arg("height") = std::nullopt,
+        py::arg("channels") = std::nullopt,
+        py::arg("level") = std::nullopt,
+        py::arg("strategy") = std::nullopt,
+        py::arg("filter") = std::nullopt,
+        py::arg("preset") = "fast",
+        py::arg("idat_chunk_size") = std::nullopt,
+        "Compress grayscale/grayscale+alpha/RGB/RGBA uint8 image data to PNG bytes."
+    );
+    png_module.def(
+        "decompress",
+        &png_decompress,
+        py::arg("data"),
+        py::arg("result") = "bytes",
+        "Decompress a supported PNG and return either result='bytes' as (pixels, (width, height, channels)) or result='numpy' as a NumPy uint8 array."
+    );
+    png_module.def(
+        "decompress_array",
+        &png_decompress_array,
+        py::arg("data"),
+        "Decompress a supported PNG and return a NumPy uint8 array with shape HxW or HxWxC."
+    );
+    png_module.def(
+        "save",
+        &png_save,
+        py::arg("path"),
+        py::arg("data"),
+        py::arg("width") = std::nullopt,
+        py::arg("height") = std::nullopt,
+        py::arg("channels") = std::nullopt,
+        py::arg("level") = std::nullopt,
+        py::arg("strategy") = std::nullopt,
+        py::arg("filter") = std::nullopt,
+        py::arg("preset") = "fast",
+        py::arg("idat_chunk_size") = std::nullopt,
+        "Save grayscale/grayscale+alpha/RGB/RGBA uint8 image data to a PNG file."
+    );
+    png_module.def(
+        "load",
+        &png_load,
+        py::arg("path"),
+        py::arg("result") = "numpy",
+        "Load a supported PNG file and return result='numpy' as a NumPy uint8 array, or result='bytes' as (pixels, (width, height, channels))."
+    );
+    png_module.def(
+        "load_array",
+        &png_load_array,
+        py::arg("path"),
+        "Load a supported PNG file and return a NumPy uint8 array with shape HxW or HxWxC."
+    );
 }
