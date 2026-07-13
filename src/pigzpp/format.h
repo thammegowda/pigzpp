@@ -22,6 +22,16 @@ int64_t dos2time(uint32_t dos);
 // Returns the number of header bytes written.
 size_t put_header(int fd, const Config& cfg);
 
+// Build the header bytes (fd-free) for in-memory sinks. Same encoding as
+// put_header for all formats.
+std::vector<unsigned char> build_header(const Config& cfg);
+
+// Build the gzip/zlib trailer bytes (fd-free). Only valid for Gzip/Zlib;
+// zip trailers require offset bookkeeping and must use put_trailer.
+std::vector<unsigned char> build_trailer_simple(const Config& cfg,
+                                                uint64_t ulen,
+                                                unsigned long check);
+
 // Write a gzip, zlib, or zip trailer to fd.
 void put_trailer(int fd, const Config& cfg,
                  uint64_t ulen, uint64_t clen,

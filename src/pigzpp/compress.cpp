@@ -14,6 +14,7 @@
 #include <cassert>
 #include <climits>
 #include <condition_variable>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <mutex>
@@ -170,6 +171,59 @@ struct Job {
 
 // ---- Compressor implementation ----
 
+// In-memory source/sink for the buffer-compression fast path. RAII: frees the
+// output buffer on destruction unless release() transfers ownership. Copyable
+// is disabled since it owns a malloc allocation.
+struct MemIO {
+    const uint8_t* in;
+    size_t in_size;
+    size_t in_pos = 0;
+    uint8_t* out = nullptr;   // malloc-backed, grows on demand
+    size_t out_len = 0;
+    size_t out_cap = 0;
+
+    MemIO(const uint8_t* data, size_t size, size_t reserve)
+        : in(data), in_size(size), out_cap(reserve ? reserve : 1) {
+        out = static_cast<uint8_t*>(std::malloc(out_cap));
+        if (!out) throw std::bad_alloc();
+    }
+    ~MemIO() { std::free(out); }
+    MemIO(const MemIO&) = delete;
+    MemIO& operator=(const MemIO&) = delete;
+
+    // Copy up to len bytes from the input view into buf.
+    size_t read(uint8_t* buf, size_t len) {
+        size_t avail = in_size - in_pos;
+        size_t n = len < avail ? len : avail;
+        if (n) std::memcpy(buf, in + in_pos, n);
+        in_pos += n;
+        return n;
+    }
+
+    // Append len bytes to the output buffer, growing (1.5x) as needed.
+    void write(const uint8_t* buf, size_t len) {
+        if (out_len + len > out_cap) {
+            size_t newcap = out_cap + (out_cap >> 1);
+            if (newcap < out_len + len) newcap = out_len + len;
+            auto* np = static_cast<uint8_t*>(std::realloc(out, newcap));
+            if (!np) throw std::bad_alloc();
+            out = np;
+            out_cap = newcap;
+        }
+        if (len) std::memcpy(out + out_len, buf, len);
+        out_len += len;
+    }
+
+    // Transfer ownership of the output buffer to the caller; the destructor
+    // will no longer free it.
+    uint8_t* release(size_t* size) {
+        *size = out_len;
+        uint8_t* p = out;
+        out = nullptr;
+        return p;
+    }
+};
+
 Compressor::Compressor(const Config& cfg) : cfg_(cfg) {
 #ifdef PIGZPP_USE_ISAL
     // The ISA-L block size is set adaptively in compress() once the file
@@ -182,11 +236,34 @@ Compressor::Compressor(const Config& cfg) : cfg_(cfg) {
 
 Compressor::~Compressor() = default;
 
-void Compressor::compress(int in_fd, int out_fd) {
-#ifdef POSIX_FADV_SEQUENTIAL
-    posix_fadvise(in_fd, 0, 0, POSIX_FADV_SEQUENTIAL);
-#endif
+size_t Compressor::read_fd(MemIO* mem, int in_fd, uint8_t* buf, size_t len) {
+    return mem ? mem->read(buf, len) : readn(in_fd, buf, len);
+}
 
+void Compressor::write_sink(MemIO* mem, int out_fd, const uint8_t* buf, size_t len) {
+    if (mem) {
+        mem->write(buf, len);
+        return;
+    }
+    writen(out_fd, buf, len);
+}
+
+bool Compressor::inmem_parallel_ok() const {
+    return cfg_.procs > 1 &&
+           cfg_.level != 11 &&
+           !cfg_.rsync &&
+           (cfg_.form == Format::Gzip || cfg_.form == Format::Zlib);
+}
+
+void Compressor::compress(int in_fd, int out_fd) {
+    compress(in_fd, out_fd, nullptr);
+}
+
+void Compressor::compress(int in_fd, int out_fd, MemIO* mem) {
+#ifdef POSIX_FADV_SEQUENTIAL
+    if (in_fd >= 0)
+        posix_fadvise(in_fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+#endif
 #ifdef PIGZPP_USE_ISAL
     {
         int lvl = cfg_.level == -1 ? 6 : cfg_.level;
@@ -195,9 +272,10 @@ void Compressor::compress(int in_fd, int out_fd) {
         // per-block overhead (flush, dict set, reset).  But we need enough
         // blocks (>= 2 per thread) to keep all threads busy.
         if (use_isal(lvl) && !cfg_.rsync && cfg_.block == DEFAULT_BLOCK_SIZE) {
-            off_t fsize = lseek(in_fd, 0, SEEK_END);
+            off_t fsize = mem ? static_cast<off_t>(mem->in_size)
+                              : lseek(in_fd, 0, SEEK_END);
             if (fsize > 0) {
-                lseek(in_fd, 0, SEEK_SET);
+                if (!mem) lseek(in_fd, 0, SEEK_SET);
                 // Target: each thread gets at least 4 blocks for good pipelining.
                 // Start with 2 MB, shrink if needed to ensure enough blocks.
                 size_t block = 2 * 1024 * 1024; // 2 MB ideal
@@ -215,7 +293,9 @@ void Compressor::compress(int in_fd, int out_fd) {
         }
 
         // Cap thread count so each thread gets at least 2 blocks.
-        if (cfg_.procs > 1) {
+        // Skipped for the in-memory path: keeping procs > 1 guarantees the
+        // mem-routed parallel_compress path is used (single_compress is fd-only).
+        if (cfg_.procs > 1 && !mem) {
             off_t fsize = lseek(in_fd, 0, SEEK_END);
             if (fsize > 0) {
                 lseek(in_fd, 0, SEEK_SET);
@@ -230,9 +310,87 @@ void Compressor::compress(int in_fd, int out_fd) {
 #endif
 
     if (cfg_.procs > 1)
-        parallel_compress(in_fd, out_fd);
+        parallel_compress(in_fd, out_fd, mem);
     else
         single_compress(in_fd, out_fd);
+}
+
+size_t Compressor::compress_buffer(const uint8_t* data, size_t size, uint8_t** out) {
+    // Fast path: the multi-threaded gzip/zlib pipeline writes deflate output
+    // straight into a malloc()'d buffer handed to the caller, avoiding the
+    // std::vector -> malloc copy the C ABI would otherwise perform. This is the
+    // common case for language bindings (all use procs > 1).
+    if (inmem_parallel_ok()) {
+        // Reserve generously so the write thread rarely reallocates: the worst
+        // realistic case is barely-compressible data whose output nears input.
+        // MemIO owns the buffer via RAII — freed automatically if compress()
+        // throws, or transferred to the caller via release() on success.
+        MemIO mem(data, size, size + (size >> 6) + 128);
+        compress(-1, -1, &mem);
+        size_t n = 0;
+        *out = mem.release(&n);
+        return n;
+    }
+
+    // Rare paths produce a std::vector; copy once into an owned malloc buffer:
+    //   - single-threaded standard-level gzip/zlib -> direct_compress (in-memory)
+    //   - zopfli (level 11), rsyncable, or zip framing -> fd pipeline over tmpfs
+    const bool direct_ok =
+        cfg_.procs <= 1 &&
+        cfg_.level != 11 &&
+        !cfg_.rsync &&
+        (cfg_.form == Format::Gzip || cfg_.form == Format::Zlib);
+    std::vector<uint8_t> v =
+        direct_ok
+            ? direct_compress(data, size)
+            : run_via_temp_fds(data, size,
+                               [this](int in_fd, int out_fd) { compress(in_fd, out_fd); });
+
+    auto* p = static_cast<uint8_t*>(std::malloc(v.empty() ? 1 : v.size()));
+    if (!p) throw std::bad_alloc();
+    if (!v.empty()) std::memcpy(p, v.data(), v.size());
+    *out = p;
+    return v.size();
+}
+
+std::vector<uint8_t> Compressor::direct_compress(const uint8_t* data, size_t size) {
+    z_stream zs{};
+    // Gzip = windowBits 15+16; zlib = 15. Strategy enum mirrors Z_* values.
+    const int window_bits = (cfg_.form == Format::Zlib) ? 15 : (15 + 16);
+    const int strategy = static_cast<int>(cfg_.strategy);
+    if (deflateInit2(&zs, cfg_.level, Z_DEFLATED, window_bits, 8, strategy) != Z_OK)
+        throw std::runtime_error("compress_buffer: deflateInit2 failed");
+
+    std::vector<uint8_t> out(deflateBound(&zs, size));
+    const auto* in_ptr = reinterpret_cast<const Bytef*>(data);
+    size_t in_left = size;
+    size_t out_left = out.size();
+    zs.next_out = out.data();
+
+    int ret;
+    do {
+        if (zs.avail_in == 0 && in_left > 0) {
+            const uInt c = in_left > UINT_MAX ? UINT_MAX : static_cast<uInt>(in_left);
+            zs.next_in = const_cast<Bytef*>(in_ptr);
+            zs.avail_in = c;
+            in_ptr += c;
+            in_left -= c;
+        }
+        if (zs.avail_out == 0 && out_left > 0) {
+            const uInt c = out_left > UINT_MAX ? UINT_MAX : static_cast<uInt>(out_left);
+            zs.avail_out = c;
+            out_left -= c;
+        }
+        ret = deflate(&zs, in_left == 0 ? Z_FINISH : Z_NO_FLUSH);
+    } while (ret == Z_OK);
+
+    if (ret != Z_STREAM_END) {
+        deflateEnd(&zs);
+        throw std::runtime_error("compress_buffer: deflate failed");
+    }
+    out.resize(zs.total_out);
+    deflateEnd(&zs);
+    return out;
 }
 
 // ---- Single-threaded compression ----
@@ -535,7 +693,7 @@ void Compressor::single_compress(int in_fd, int out_fd) {
 
 // ---- Parallel compression ----
 
-void Compressor::parallel_compress(int in_fd, int out_fd) {
+void Compressor::parallel_compress(int in_fd, int out_fd, MemIO* mem) {
     // Buffer pools
     BufferPool in_pool(cfg_.block, inbufs(cfg_.procs));
     BufferPool out_pool(outpool(cfg_.block), -1);
@@ -556,7 +714,9 @@ void Compressor::parallel_compress(int in_fd, int out_fd) {
     std::condition_variable write_cv;
 
     // Write header (before launching threads)
-    size_t head = put_header(out_fd, cfg_);
+    std::vector<unsigned char> hdr_bytes = build_header(cfg_);
+    write_sink(mem, out_fd, hdr_bytes.data(), hdr_bytes.size());
+    size_t head = hdr_bytes.size();
 
     // Compress worker thread function
     auto compress_worker = [&]() {
@@ -822,7 +982,7 @@ void Compressor::parallel_compress(int in_fd, int out_fd) {
             clen += job->out->len;
 
             // Write compressed data
-            writen(out_fd, job->out->data(), job->out->len);
+            write_sink(mem, out_fd, job->out->data(), job->out->len);
             job->out.reset(); // returns to pool via custom deleter
 
             // Wait for check value (spin-yield: fast because CRC runs
@@ -852,7 +1012,7 @@ void Compressor::parallel_compress(int in_fd, int out_fd) {
     // Main thread: read input and create jobs
     int64_t seq = 0;
     auto next_buf = in_pool.get();
-    next_buf->len = readn(in_fd, next_buf->data(), next_buf->size());
+    next_buf->len = read_fd(mem, in_fd, next_buf->data(), next_buf->size());
     BufferPtr hold;
     BufferPtr dict;
 
@@ -870,7 +1030,7 @@ void Compressor::parallel_compress(int in_fd, int out_fd) {
 
         if (!next_buf) {
             next_buf = in_pool.get();
-            next_buf->len = readn(in_fd, next_buf->data(), next_buf->size());
+            next_buf->len = read_fd(mem, in_fd, next_buf->data(), next_buf->size());
         }
 
         // Rsyncable block boundary detection
@@ -973,7 +1133,12 @@ void Compressor::parallel_compress(int in_fd, int out_fd) {
     write_thread.join();
 
     // Write trailer
-    put_trailer(out_fd, cfg_, ulen, clen, check_val, head);
+    if (mem) {
+        std::vector<unsigned char> tlr = build_trailer_simple(cfg_, ulen, check_val);
+        write_sink(mem, out_fd, tlr.data(), tlr.size());
+    } else {
+        put_trailer(out_fd, cfg_, ulen, clen, check_val, head);
+    }
 }
 
 } // namespace pigzpp
