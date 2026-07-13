@@ -5,10 +5,12 @@
 #include "compress.h"
 #include "config.h"
 #include "decompress.h"
+#include "png.h"
 
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -90,6 +92,50 @@ pigzpp_buffer pigzpp_gzip_decompress(const uint8_t* data, size_t size,
 
 void pigzpp_free(pigzpp_buffer buf) {
     std::free(buf.data);
+}
+
+pigzpp_buffer pigzpp_png_encode(const uint8_t* pixels, size_t pixel_size,
+                                uint32_t width, uint32_t height, uint8_t channels,
+                                int level, const char* strategy, const char* filter) {
+    try {
+        std::vector<uint8_t> out = pigzpp::png::encode_buffer(
+            pixels, pixel_size, width, height, channels,
+            level,
+            strategy ? std::string(strategy) : std::string("rle"),
+            filter ? std::string(filter) : std::string("up"));
+        return to_c_buffer(out);
+    } catch (const std::exception&) {
+        return pigzpp_buffer{nullptr, 0, "pigzpp: png encode failed"};
+    } catch (...) {
+        return pigzpp_buffer{nullptr, 0, "pigzpp: png encode failed (unknown)"};
+    }
+}
+
+pigzpp_image pigzpp_png_decode(const uint8_t* data, size_t size) {
+    try {
+        pigzpp::png::Image img = pigzpp::png::decode(data, size);
+        pigzpp_image out{};
+        out.width = img.width;
+        out.height = img.height;
+        out.channels = img.channels;
+        out.pixel_size = img.pixels.size();
+        out.pixels = static_cast<uint8_t*>(
+            std::malloc(img.pixels.empty() ? 1 : img.pixels.size()));
+        if (!out.pixels)
+            return pigzpp_image{nullptr, 0, 0, 0, 0, "pigzpp: allocation failed"};
+        if (!img.pixels.empty())
+            std::memcpy(out.pixels, img.pixels.data(), img.pixels.size());
+        out.error = nullptr;
+        return out;
+    } catch (const std::exception&) {
+        return pigzpp_image{nullptr, 0, 0, 0, 0, "pigzpp: png decode failed"};
+    } catch (...) {
+        return pigzpp_image{nullptr, 0, 0, 0, 0, "pigzpp: png decode failed (unknown)"};
+    }
+}
+
+void pigzpp_image_free(pigzpp_image img) {
+    std::free(img.pixels);
 }
 
 } // extern "C"

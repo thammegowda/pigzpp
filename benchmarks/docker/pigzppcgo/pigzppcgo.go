@@ -92,3 +92,64 @@ func call(src []byte, level, threads int, compress bool) ([]byte, error) {
 	out := C.GoBytes(unsafe.Pointer(buf.data), C.int(buf.size))
 	return out, nil
 }
+
+// Image is a decoded raster image: row-major pixels with Channels bytes each.
+type Image struct {
+	Width    uint32
+	Height   uint32
+	Channels uint32
+	Pixels   []byte
+}
+
+// PngEncode encodes raw row-major pixels (channels bytes per pixel) to PNG
+// bytes. level is 1-9; strategy and filter are option names (empty = default).
+func PngEncode(pixels []byte, width, height, channels uint32, level int, strategy, filter string) ([]byte, error) {
+	var ptr *C.uint8_t
+	if len(pixels) > 0 {
+		ptr = (*C.uint8_t)(unsafe.Pointer(&pixels[0]))
+	}
+	var cs, cf *C.char
+	if strategy != "" {
+		cs = C.CString(strategy)
+		defer C.free(unsafe.Pointer(cs))
+	}
+	if filter != "" {
+		cf = C.CString(filter)
+		defer C.free(unsafe.Pointer(cf))
+	}
+	buf := C.pigzpp_png_encode(ptr, C.size_t(len(pixels)),
+		C.uint32_t(width), C.uint32_t(height), C.uint8_t(channels),
+		C.int(level), cs, cf)
+	runtime.KeepAlive(pixels)
+
+	if buf.error != nil {
+		msg := C.GoString(buf.error)
+		C.pigzpp_free(buf)
+		return nil, errors.New(msg)
+	}
+	defer C.pigzpp_free(buf)
+	return C.GoBytes(unsafe.Pointer(buf.data), C.int(buf.size)), nil
+}
+
+// PngDecode decodes PNG bytes into a raw Image.
+func PngDecode(data []byte) (Image, error) {
+	var ptr *C.uint8_t
+	if len(data) > 0 {
+		ptr = (*C.uint8_t)(unsafe.Pointer(&data[0]))
+	}
+	img := C.pigzpp_png_decode(ptr, C.size_t(len(data)))
+	runtime.KeepAlive(data)
+
+	if img.error != nil {
+		msg := C.GoString(img.error)
+		C.pigzpp_image_free(img)
+		return Image{}, errors.New(msg)
+	}
+	defer C.pigzpp_image_free(img)
+	return Image{
+		Width:    uint32(img.width),
+		Height:   uint32(img.height),
+		Channels: uint32(img.channels),
+		Pixels:   C.GoBytes(unsafe.Pointer(img.pixels), C.int(img.pixel_size)),
+	}, nil
+}
