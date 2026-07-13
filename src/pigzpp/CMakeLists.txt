@@ -11,7 +11,11 @@ set(PIGZPP_LIB_SOURCES
 
 add_library(pigzpp_lib STATIC ${PIGZPP_LIB_SOURCES})
 target_include_directories(pigzpp_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(pigzpp_lib PUBLIC zlib_target Threads::Threads zopfli)
+target_link_libraries(pigzpp_lib PUBLIC zlib_target zopfli)
+if(NOT EMSCRIPTEN)
+    # Under Emscripten pthreads come from -pthread (added globally), not this target.
+    target_link_libraries(pigzpp_lib PUBLIC Threads::Threads)
+endif()
 if(PIGZPP_HAS_ISAL)
     target_link_libraries(pigzpp_lib PUBLIC isal)
 endif()
@@ -30,7 +34,8 @@ target_link_options(pigzpp_lib PUBLIC
     $<$<CONFIG:Debug>:-fsanitize=address,undefined>
 )
 
-# CLI executable
+# CLI executable (native only — the WASM build ships the Embind module instead).
+if(NOT EMSCRIPTEN)
 add_executable(pigzpp_exe main.cpp)
 set_target_properties(pigzpp_exe PROPERTIES
     OUTPUT_NAME pigzpp
@@ -48,4 +53,25 @@ target_compile_options(pigzpp_exe PRIVATE
 if(PIGZPP_STATIC AND CMAKE_BUILD_TYPE STREQUAL "Release")
     target_link_options(pigzpp_exe PRIVATE -static -static-libgcc -static-libstdc++)
     message(STATUS "Static linking enabled for pigzpp executable")
+endif()
+endif()
+
+# Shared C-ABI library for in-process language bindings (Go/cgo, Rust, etc.).
+# Bundles pigzpp_lib and its static deps into one shared object so consumers
+# link a single -lpigzppc without knowing the internal dependency graph.
+option(PIGZPP_BUILD_CAPI "Build the shared C-ABI library (libpigzppc)" OFF)
+if(PIGZPP_BUILD_CAPI AND NOT EMSCRIPTEN)
+    add_library(pigzppc SHARED capi.cpp)
+    set_target_properties(pigzppc PROPERTIES
+        OUTPUT_NAME pigzppc
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+        POSITION_INDEPENDENT_CODE ON
+    )
+    target_include_directories(pigzppc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(pigzppc PRIVATE pigzpp_lib)
+    target_compile_options(pigzppc PRIVATE
+        -Wall -Wextra
+        $<$<CONFIG:Release>:-O3 -DNDEBUG>
+    )
+    message(STATUS "Building shared C-ABI library libpigzppc")
 endif()
