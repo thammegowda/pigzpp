@@ -3,3 +3,6 @@ build-*/
 tmp/
 __pycache__
 dist/
+# WASM build outputs and bench deps
+build-wasm*/
+benchmarks/wasm/node_modules/

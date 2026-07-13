@@ -16,9 +16,41 @@ option(PIGZPP_USE_ZLIB_NG "Use zlib-ng instead of system zlib (hardware-accelera
 option(PIGZPP_STATIC "Build fully static binary" ON)
 option(PIGZPP_NATIVE "Use -march=native for CPU-specific optimizations (not portable)" OFF)
 option(PIGZPP_LTO "Enable Link-Time Optimization" ON)
+option(PIGZPP_WASM_SIMD "Enable WASM 128-bit SIMD (Emscripten builds only)" ON)
+option(PIGZPP_WASM_THREADS "Enable WASM threads/pthreads (Emscripten builds only)" OFF)
+
+# --- Emscripten / WebAssembly overrides ---
+# ISA-L is x86 assembly and cannot target WASM; Python bindings, the CLI's static
+# linking, and -march tuning are all native-only. Force portable defaults here so
+# a plain `emcmake cmake ..` produces a working build.
+if(EMSCRIPTEN)
+    message(STATUS "Emscripten toolchain detected — configuring WebAssembly build")
+    set(PIGZPP_USE_ISAL OFF CACHE BOOL "" FORCE)
+    set(PIGZPP_NATIVE OFF CACHE BOOL "" FORCE)
+    set(PIGZPP_STATIC OFF CACHE BOOL "" FORCE)
+    set(PIGZPP_LTO OFF CACHE BOOL "" FORCE)
+    set(PIGZPP_BUILD_PYTHON OFF CACHE BOOL "" FORCE)
+    set(PIGZPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(PIGZPP_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+endif()
 
 # --- Compiler flags ---
-if(PIGZPP_NATIVE AND CMAKE_BUILD_TYPE STREQUAL "Release")
+if(EMSCRIPTEN)
+    # Use Emscripten's exception model (MVP-compatible) so binaryen/wasm-opt can
+    # process the module. compress_buffer/decompress_buffer throw on error.
+    add_compile_options(-fexceptions)
+    add_link_options(-fexceptions)
+    # WASM bytecode is portable; SIMD/threads are opt-in capabilities.
+    if(PIGZPP_WASM_SIMD)
+        add_compile_options(-msimd128)
+        message(STATUS "WASM SIMD (128-bit) enabled")
+    endif()
+    if(PIGZPP_WASM_THREADS)
+        add_compile_options(-pthread)
+        add_link_options(-pthread)
+        message(STATUS "WASM threads enabled (requires cross-origin isolation in browsers)")
+    endif()
+elseif(PIGZPP_NATIVE AND CMAKE_BUILD_TYPE STREQUAL "Release")
     add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-march=native>)
     message(STATUS "Using -march=native (NOT PORTABLE — binary requires this CPU or newer)")
 else()
@@ -34,7 +66,9 @@ if(PIGZPP_LTO AND CMAKE_BUILD_TYPE STREQUAL "Release")
 endif()
 
 # --- Dependencies ---
-find_package(Threads REQUIRED)
+if(NOT EMSCRIPTEN)
+    find_package(Threads REQUIRED)
+endif()
 find_library(MATH_LIBRARY m)
 
 # All third-party libraries are built as static archives.
@@ -49,6 +83,12 @@ if(PIGZPP_USE_ZLIB_NG AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-n
     set(WITH_GTEST OFF CACHE BOOL "zlib-ng: disable gtest" FORCE)
     set(WITH_BENCHMARKS OFF CACHE BOOL "zlib-ng: disable benchmarks" FORCE)
     set(WITH_NEW_STRATEGIES ON CACHE BOOL "zlib-ng: new strategies" FORCE)
+    if(EMSCRIPTEN)
+        # wasm has no optimized arch; the runtime CPU-dispatch functable only adds
+        # indirection and generates dispatch stubs that break under wasm's strict
+        # call-signature validation. Call the generic C implementations directly.
+        set(WITH_RUNTIME_CPU_DETECTION OFF CACHE BOOL "zlib-ng: no CPU dispatch on wasm" FORCE)
+    endif()
     set(CMAKE_POSITION_INDEPENDENT_CODE ON)
     add_subdirectory(third_party/zlib-ng EXCLUDE_FROM_ALL)
     # With BUILD_SHARED_LIBS=OFF and ZLIB_COMPAT, zlib-ng creates the real
@@ -102,6 +142,11 @@ endif()
 
 # Library + CLI
 add_subdirectory(src/pigzpp)
+
+# WebAssembly (Embind) module — only under the Emscripten toolchain.
+if(EMSCRIPTEN)
+    add_subdirectory(src/wasm)
+endif()
 
 # Python bindings
 option(PIGZPP_BUILD_PYTHON "Build Python bindings" ON)
