@@ -42,7 +42,7 @@ import (
 
 	kpgzip "github.com/klauspost/compress/gzip"
 	"github.com/klauspost/pgzip"
-	"pigzpp/benchmarks/docker/pigzppcgo"
+	pigzpp "github.com/thammegowda/pigzpp/src/go"
 )
 
 func main() {
@@ -121,7 +121,7 @@ func benchmark(name string, data []byte, fn compressFunc, iters int) (result, er
 	return result{name: name, best: best, outSize: len(out), inSize: len(data)}, nil
 }
 
-// benchmarkOwned times pigzppcgo.CompressOwned, the fully zero-copy output
+// benchmarkOwned times pigzpp.CompressOwned, the fully zero-copy output
 // path. Each iteration returns a slice aliasing a C buffer plus a release
 // func; we free the previous iteration's buffer and keep the last alive for
 // verification, freeing it afterwards.
@@ -131,7 +131,7 @@ func benchmarkOwned(name string, data []byte, level, threads, iters int) (result
 	var lastFree func()
 	for i := 0; i < iters; i++ {
 		start := time.Now()
-		o, free, err := pigzppcgo.CompressOwned(data, level, threads)
+		o, free, err := pigzpp.CompressOwned(data, level, threads)
 		elapsed := time.Since(start)
 		if err != nil {
 			return result{}, err
@@ -243,7 +243,7 @@ func methodFor(name string, level, threads int, pigzbin string) (compressFunc, b
 
 	case "pigzppcgo": // pigzpp linked in-process via cgo (no fork/pipe)
 		return func(src []byte) ([]byte, error) {
-			return pigzppcgo.Compress(src, level, threads)
+			return pigzpp.Compress(src, level, threads)
 		}, true
 	}
 	return nil, false

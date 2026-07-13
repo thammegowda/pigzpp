@@ -1,20 +1,21 @@
-// Package pigzppcgo binds pigzpp's C ABI (libpigzppc) directly into Go via cgo,
-// running compression in-process with no fork/exec/pipe overhead.
+// Package pigzpp binds pigzpp's C ABI (libpigzppc) directly into Go via cgo,
+// running compression and PNG encode/decode in-process with no fork/exec/pipe
+// overhead.
 //
 // Build requirements:
-//   - Build the shared library first:
-//       cmake -DPIGZPP_BUILD_CAPI=ON <build-dir> && make pigzppc
-//   - The cgo directives below locate headers in src/pigzpp and link against
-//     build/libpigzppc.so relative to this file (${SRCDIR}).
+//   - Build the shared library first, from the repository root:
+//       cmake -DPIGZPP_BUILD_CAPI=ON -S . -B build && cmake --build build --target pigzppc
+//   - The cgo directives below locate capi.h in ../pigzpp and link against
+//     ../../build/libpigzppc.so relative to this file (${SRCDIR}).
 //
 // At run time the loader must find libpigzppc.so. The LDFLAGS set an rpath to
 // the build directory, so running from the source tree works without setting
-// LD_LIBRARY_PATH.
-package pigzppcgo
+// LD_LIBRARY_PATH. For installed use, place libpigzppc.so on the loader path.
+package pigzpp
 
 /*
-#cgo CPPFLAGS: -I${SRCDIR}/../../../src/pigzpp
-#cgo LDFLAGS: -L${SRCDIR}/../../../build -Wl,-rpath,${SRCDIR}/../../../build -lpigzppc
+#cgo CPPFLAGS: -I${SRCDIR}/../pigzpp
+#cgo LDFLAGS: -L${SRCDIR}/../../build -Wl,-rpath,${SRCDIR}/../../build -lpigzppc
 #include <stdlib.h>
 #include "capi.h"
 */
