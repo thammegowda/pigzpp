@@ -12,8 +12,8 @@ import pigzpp
 
 @pytest.fixture
 def tmp_zip():
-    d = tempfile.mkdtemp()
-    yield os.path.join(d, "test.zip")
+    with tempfile.TemporaryDirectory() as d:
+        yield os.path.join(d, "test.zip")
 
 
 class TestWriteRead:
@@ -103,19 +103,22 @@ class TestExtract:
         with pigzpp.ZipFile(tmp_zip, "w") as z:
             z.writestr("top.txt", "top")
             z.writestr("sub/inner.txt", "inner")
-        out = tempfile.mkdtemp()
-        with pigzpp.ZipFile(tmp_zip) as z:
-            z.extractall(out)
-        assert open(os.path.join(out, "top.txt")).read() == "top"
-        assert open(os.path.join(out, "sub", "inner.txt")).read() == "inner"
+        with tempfile.TemporaryDirectory() as out:
+            with pigzpp.ZipFile(tmp_zip) as z:
+                z.extractall(out)
+            with open(os.path.join(out, "top.txt")) as f:
+                assert f.read() == "top"
+            with open(os.path.join(out, "sub", "inner.txt")) as f:
+                assert f.read() == "inner"
 
     def test_extract_single(self, tmp_zip):
         with pigzpp.ZipFile(tmp_zip, "w") as z:
             z.writestr("only.txt", "content")
-        out = tempfile.mkdtemp()
-        with pigzpp.ZipFile(tmp_zip) as z:
-            path = z.extract("only.txt", out)
-        assert open(path).read() == "content"
+        with tempfile.TemporaryDirectory() as out:
+            with pigzpp.ZipFile(tmp_zip) as z:
+                path = z.extract("only.txt", out)
+            with open(path) as f:
+                assert f.read() == "content"
 
 
 class TestStdlibInterop:
