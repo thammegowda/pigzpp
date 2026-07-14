@@ -12,7 +12,7 @@
 // The pigzpp-wasm module path defaults to a sibling build-wasm-simd/ (or build-wasm/).
 
 import { createRequire } from 'node:module';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 import zlib from 'node:zlib';
@@ -42,6 +42,7 @@ const ITERS = Number(arg('iters', '5'));
 const N = Math.floor(SIZE_MB * 1024 * 1024);
 
 // Semi-compressible corpus: repeated English-ish tokens with noise.
+// Only used as a fallback when the shared core dataset is missing.
 function makeCorpus(n) {
   const words = 'the quick brown fox jumps over a lazy dog and then runs far away '.split(' ');
   const out = Buffer.allocUnsafe(n);
@@ -56,6 +57,24 @@ function makeCorpus(n) {
     p += len;
   }
   return new Uint8Array(out.buffer, out.byteOffset, out.length);
+}
+
+// Load the realistic corpus shared with the core/python suites
+// (benchmarks/core/gen_data.py writes {N}MB.txt / {N}MB.bin into build/bench_data).
+// Falls back to a synthetic corpus if the file is absent.
+function loadCorpus(sizeMb, n) {
+  const dataDir = arg('data-dir', path.join(repoRoot, 'build', 'bench_data'));
+  for (const ext of ['txt', 'bin']) {
+    const f = path.join(dataDir, `${sizeMb}MB.${ext}`);
+    if (existsSync(f)) {
+      const buf = readFileSync(f);
+      console.log(`corpus: ${f}`);
+      return new Uint8Array(buf.buffer, buf.byteOffset, buf.length);
+    }
+  }
+  console.warn(`corpus: ${sizeMb}MB.{txt,bin} not found in ${dataDir}; using synthetic fallback.\n` +
+    `  Generate shared data: python benchmarks/core/gen_data.py --sizes ${sizeMb} --data-dir ${dataDir}`);
+  return makeCorpus(n);
 }
 
 function fmt(x, d = 1) { return x.toFixed(d); }
@@ -101,8 +120,8 @@ async function main() {
   const createPigzppModule = (await import(pathToFileURL(modPath).href)).default;
   const M = await createPigzppModule();
 
-  const data = makeCorpus(N);
-  console.log(`corpus: ${fmt(N / 1e6, 2)} MB | iters: ${ITERS} | best-of timing`);
+  const data = loadCorpus(SIZE_MB, N);
+  console.log(`corpus: ${fmt(data.length / 1e6, 2)} MB | iters: ${ITERS} | best-of timing`);
   console.log(`pigzpp-wasm: ${M.version()} | threadsEnabled=${M.threadsEnabled()}\n`);
 
   const mbps = (ms) => (N / 1e6) / (ms / 1000);

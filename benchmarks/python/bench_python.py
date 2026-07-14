@@ -18,10 +18,19 @@ Usage:
 import argparse
 import gzip
 import os
+import sys
 import tempfile
 import time
+from pathlib import Path
+
+# Make the core benchmark suite importable (shared realistic dataset generator
+# and the pigz_sp helper both live in benchmarks/core).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
 
 import pigzpp
+import gen_data  # realistic multilingual/random datasets (benchmarks/core)
+
+DEFAULT_DATA_DIR = "build/bench_data"
 
 # Optional libraries — gracefully degrade if not installed
 try:
@@ -52,6 +61,26 @@ def generate_text(size_mb: int) -> str:
     line = "The quick brown fox jumps over the lazy dog. " * 2 + "\n"
     count = (size_mb * 1024 * 1024) // len(line)
     return line * count
+
+
+def load_corpus(data_dir, size_mb: int, kind: str = "text") -> bytes:
+    """Load a realistic benchmark corpus from the shared core dataset dir.
+
+    Reuses benchmarks/core/gen_data.py: kind="text" -> {N}MB.txt (multilingual
+    Wikipedia), kind="random" -> {N}MB.bin (incompressible). The file is
+    generated and cached on first use, so all benchmark suites share one corpus.
+    """
+    data_dir = Path(data_dir)
+    ext = ".bin" if kind == "random" else ".txt"
+    path = data_dir / f"{size_mb}MB{ext}"
+    if not path.is_file():
+        data_dir.mkdir(parents=True, exist_ok=True)
+        if kind == "random":
+            gen_data.gen_random(path, size_mb)
+        else:
+            seed = gen_data.fetch_multilingual_seed(data_dir)
+            gen_data.gen_text(path, size_mb, seed)
+    return path.read_bytes()
 
 
 def bench(func, iterations: int) -> float:
@@ -163,7 +192,7 @@ def _print_table(title, sizes_mb, names, timings, data_sizes, baseline="gzip"):
         print(row)
 
 
-def bench_file_api(sizes_mb: list[int], iterations: int):
+def bench_file_api(sizes_mb: list[int], iterations: int, data_dir):
     """Benchmark file-based compress/decompress across all available libraries."""
     libs = _available_libs()
     names = [n for n, _, _ in libs]
@@ -172,8 +201,8 @@ def bench_file_api(sizes_mb: list[int], iterations: int):
     data_sizes = {}
 
     for size_mb in sizes_mb:
-        text = generate_text(size_mb)
-        data_sizes[size_mb] = len(text)
+        text = load_corpus(data_dir, size_mb).decode("utf-8", "replace")
+        data_sizes[size_mb] = len(text.encode("utf-8"))
 
         with tempfile.TemporaryDirectory() as tmpdir:
             for name in names:
@@ -196,7 +225,7 @@ def bench_file_api(sizes_mb: list[int], iterations: int):
     _print_table("File API: Decompression", sizes_mb, names, decomp_times, data_sizes)
 
 
-def bench_bytes_api(sizes_mb: list[int], iterations: int):
+def bench_bytes_api(sizes_mb: list[int], iterations: int, data_dir):
     """Benchmark in-memory compress/decompress across all available libraries."""
     libs = _available_libs()
     names = [n for n, has_bytes, _ in libs if has_bytes]
@@ -205,7 +234,7 @@ def bench_bytes_api(sizes_mb: list[int], iterations: int):
     data_sizes = {}
 
     for size_mb in sizes_mb:
-        raw = generate_text(size_mb).encode()
+        raw = load_corpus(data_dir, size_mb)
         data_sizes[size_mb] = len(raw)
 
         for name in names:
@@ -234,9 +263,11 @@ def main():
                         help="Only run file API benchmarks")
     parser.add_argument("--bytes-only", action="store_true",
                         help="Only run bytes API benchmarks")
+    parser.add_argument("--data-dir", default=DEFAULT_DATA_DIR,
+                        help="Shared dataset dir (default: build/bench_data); "
+                             "realistic corpora are generated here on first use")
     args = parser.parse_args()
 
-    import sys
     import zlib
     print("pigzpp Python benchmark")
     print(f"Python: {sys.version.split()[0]}")
@@ -265,9 +296,9 @@ def main():
     run_bytes = not args.file_only
 
     if run_file:
-        bench_file_api(args.sizes, args.iterations)
+        bench_file_api(args.sizes, args.iterations, args.data_dir)
     if run_bytes:
-        bench_bytes_api(args.sizes, args.iterations)
+        bench_bytes_api(args.sizes, args.iterations, args.data_dir)
 
 
 if __name__ == "__main__":
