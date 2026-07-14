@@ -45,10 +45,10 @@ pigzpp's zlib-ng backend is **2.4× faster than pigz** at the same ratio; ISA-L 
 
 Ratios: pigzpp `isal` 2.58, pigzpp `zlib` 2.81. In every language pigzpp is fastest, and its parallel **zlib-ng** backend matches or beats the best parallel competitor (`pgzip`, `gzp`) at an *equal or better* ratio.
 
-**WebAssembly** (single-thread, zlib-ng only — no ISA-L in WASM; 16 MB text, Node):
+**WebAssembly** (zlib-ng + 128-bit SIMD; ISA-L is x86-only, so not available in WASM; Node 22). Single-thread, 16 MB text:
 
 | engine | MB/s | ratio |
-|---|---|---|
+|---|---:|---:|
 | **pigzpp-wasm** | **45** | 2.81 |
 | node-zlib | 33 | 2.84 |
 | CompressionStream (native) | 27 | 2.84 |
@@ -56,6 +56,18 @@ Ratios: pigzpp `isal` 2.58, pigzpp `zlib` 2.81. In every language pigzpp is fast
 | pako (JS) | 9 | 2.83 |
 
 Even single-threaded, pigzpp-wasm (zlib-ng + SIMD) beats the browser's native `CompressionStream` and the popular JS libraries.
+
+The threaded WASM build (pthreads via Web Workers + `SharedArrayBuffer`) scales across cores. On a **128 MB** corpus (level 6), on this 5-physical-core WSL2 host (`CompressionStream` and `node-zlib` are single-thread only, ~28 and ~32 MB/s here):
+
+| threads | MB/s | speedup |
+|---:|---:|---:|
+| 1 | 38 | 1.00x |
+| 2 | 74 | 1.93x |
+| 4 | 127 | 3.32x |
+| 5 | 152 | 3.96x |
+| 8 | 179 | 4.66x |
+
+At 8 threads pigzpp-wasm reaches **~179 MB/s** (4.7x over single-thread, ~6x native `CompressionStream`). Browsers must be cross-origin isolated (COOP/COEP headers) to enable `SharedArrayBuffer`, and blocking compress calls should run in a Web Worker. Reproduce with `node benchmarks/wasm/scaling.mjs --size 128 --threads 1,2,4,5,8` after `scripts/build_wasm.sh threads`.
 
 Benchmarks live under `benchmarks/` (`core`, `python`, `go-docker`, `rust`, `wasm`), all reading the shared corpus in `build/bench_data/`. See [notes/05-summary.md](notes/05-summary.md) for the earlier large-core CLI runs (48-core Xeon) and thread-scaling detail.
 

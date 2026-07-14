@@ -7,7 +7,7 @@
 // Usage:
 //   node scaling.mjs [--size <MB>] [--iters <n>] [--level <0-9>] [--threads 1,2,4,8]
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 import zlib from 'node:zlib';
@@ -32,7 +32,7 @@ if (!existsSync(modPath)) {
   process.exit(1);
 }
 
-// Build a ~SIZE_MB text corpus (semi-compressible English-ish tokens).
+// Fallback synthetic corpus (semi-compressible English-ish tokens).
 function makeText(n) {
   const words =
     'the quick brown fox jumps over a lazy dog while the sun sets slowly behind distant hills and rivers flow '
@@ -48,6 +48,24 @@ function makeText(n) {
     p += len;
   }
   return new Uint8Array(out.buffer, out.byteOffset, out.length);
+}
+
+// Load the realistic corpus shared with the core/python/rust suites
+// (benchmarks/core/gen_data.py writes {N}MB.txt into build/bench_data).
+// Falls back to synthetic text if the file is absent.
+function loadCorpus(sizeMb, n) {
+  const dataDir = arg('data-dir', path.join(repoRoot, 'build', 'bench_data'));
+  for (const ext of ['txt', 'bin']) {
+    const f = path.join(dataDir, `${sizeMb}MB.${ext}`);
+    if (existsSync(f)) {
+      const buf = readFileSync(f);
+      console.log(`corpus: ${f}`);
+      return new Uint8Array(buf.buffer, buf.byteOffset, buf.length);
+    }
+  }
+  console.warn(`corpus: ${sizeMb}MB.{txt,bin} not found in ${dataDir}; using synthetic fallback.\n` +
+    `  Generate shared data: python benchmarks/core/gen_data.py --sizes ${sizeMb} --data-dir ${dataDir}`);
+  return makeText(n);
 }
 
 function bestOf(fn) {
@@ -68,7 +86,8 @@ const M = await createPigzppModule();
 console.log(`pigzpp-wasm: ${M.version()} | threadsEnabled=${M.threadsEnabled()}`);
 console.log(`corpus: ${(N / 1e6).toFixed(1)} MB text | level ${LEVEL} | best-of-${ITERS}\n`);
 
-const data = makeText(N);
+const data = loadCorpus(SIZE_MB, N);
+const NB = data.length; // actual corpus length in bytes
 
 // Sanity: validate the level-6 single-thread output once.
 {
@@ -77,7 +96,7 @@ const data = makeText(N);
   if (!ok) { console.error('validation FAILED'); process.exit(1); }
 }
 
-const mbps = (ms) => (N / 1e6) / (ms / 1000);
+const mbps = (ms) => (NB / 1e6) / (ms / 1000);
 const rows = [];
 let baseline = null;
 
@@ -92,6 +111,6 @@ console.log('|---:|---:|---:|---:|---:|---:|');
 for (const r of rows) {
   console.log(
     `| ${r.t} | ${mbps(r.ms).toFixed(1)} | ${r.speedup.toFixed(2)}x | ` +
-    `${r.ms.toFixed(0)} | ${(r.out / N).toFixed(3)} | ${(r.out / 1e6).toFixed(2)} |`
+    `${r.ms.toFixed(0)} | ${(r.out / NB).toFixed(3)} | ${(r.out / 1e6).toFixed(2)} |`
   );
 }
