@@ -110,8 +110,10 @@ def _available_libs():
 def _bytes_compress(name, raw):
     if name == "gzip":
         return gzip.compress(raw)
-    elif name == "pigzpp":
-        return pigzpp.compress(raw)
+    elif name.startswith("pigzpp"):
+        # "pigzpp" or "pigzpp:<engine>" (auto|isal|zlib)
+        engine = name.split(":", 1)[1] if ":" in name else "auto"
+        return pigzpp.compress(raw, engine=engine)
     elif name == "zlib_ng":
         return gzip_ng.compress(raw)
     elif name == "isal":
@@ -121,7 +123,7 @@ def _bytes_compress(name, raw):
 def _bytes_decompress(name, data):
     if name == "gzip":
         return gzip.decompress(data)
-    elif name == "pigzpp":
+    elif name.startswith("pigzpp"):
         return pigzpp.decompress(data)
     elif name == "zlib_ng":
         return gzip_ng.decompress(data)
@@ -192,6 +194,23 @@ def _print_table(title, sizes_mb, names, timings, data_sizes, baseline="gzip"):
         print(row)
 
 
+def _print_ratio_table(title, sizes_mb, names, comp_sizes, data_sizes):
+    """Print compression ratio (input/output) per method."""
+    COL = 11
+    print(f"\n=== {title} (input/output) ===\n")
+    hdr = f"{'Size':>10}"
+    for n in names:
+        hdr += f"  {n:>{COL}}"
+    print(hdr)
+    print("-" * (12 + (COL + 2) * len(names)))
+    for size_mb in sizes_mb:
+        row = f"{size_mb:>7} MB"
+        for name in names:
+            ratio = data_sizes[size_mb] / comp_sizes[(size_mb, name)]
+            row += f"  {ratio:>{COL}.3f}"
+        print(row)
+
+
 def bench_file_api(sizes_mb: list[int], iterations: int, data_dir):
     """Benchmark file-based compress/decompress across all available libraries."""
     libs = _available_libs()
@@ -225,13 +244,25 @@ def bench_file_api(sizes_mb: list[int], iterations: int, data_dir):
     _print_table("File API: Decompression", sizes_mb, names, decomp_times, data_sizes)
 
 
-def bench_bytes_api(sizes_mb: list[int], iterations: int, data_dir):
-    """Benchmark in-memory compress/decompress across all available libraries."""
+def bench_bytes_api(sizes_mb: list[int], iterations: int, data_dir, engines):
+    """Benchmark in-memory compress/decompress across all available libraries.
+
+    pigzpp is expanded into one column per requested backend engine
+    (e.g. pigzpp:isal, pigzpp:zlib) so the backend tradeoff is visible.
+    """
     libs = _available_libs()
-    names = [n for n, has_bytes, _ in libs if has_bytes]
+    names = []
+    for n, has_bytes, _ in libs:
+        if not has_bytes:
+            continue
+        if n == "pigzpp":
+            names.extend(f"pigzpp:{e}" for e in engines)
+        else:
+            names.append(n)
     comp_times = {}
     decomp_times = {}
     data_sizes = {}
+    comp_sizes = {}
 
     for size_mb in sizes_mb:
         raw = load_corpus(data_dir, size_mb)
@@ -244,12 +275,14 @@ def bench_bytes_api(sizes_mb: list[int], iterations: int, data_dir):
         compressed = {}
         for name in names:
             compressed[name] = _bytes_compress(name, raw)
+            comp_sizes[(size_mb, name)] = len(compressed[name])
 
         for name in names:
             decomp_times[(size_mb, name)] = bench(
                 lambda n=name: _bytes_decompress(n, compressed[n]), iterations)
 
     _print_table("Bytes API: Compression", sizes_mb, names, comp_times, data_sizes)
+    _print_ratio_table("Bytes API: Compression ratio", sizes_mb, names, comp_sizes, data_sizes)
     _print_table("Bytes API: Decompression", sizes_mb, names, decomp_times, data_sizes)
 
 
@@ -266,6 +299,9 @@ def main():
     parser.add_argument("--data-dir", default=DEFAULT_DATA_DIR,
                         help="Shared dataset dir (default: build/bench_data); "
                              "realistic corpora are generated here on first use")
+    parser.add_argument("--engines", default="auto,isal,zlib",
+                        help="Comma-separated pigzpp backends for the bytes API "
+                             "(auto,isal,zlib); each becomes a pigzpp:<engine> column")
     args = parser.parse_args()
 
     import zlib
@@ -294,11 +330,12 @@ def main():
 
     run_file = not args.bytes_only
     run_bytes = not args.file_only
+    engines = [e.strip() for e in args.engines.split(",") if e.strip()]
 
     if run_file:
         bench_file_api(args.sizes, args.iterations, args.data_dir)
     if run_bytes:
-        bench_bytes_api(args.sizes, args.iterations, args.data_dir)
+        bench_bytes_api(args.sizes, args.iterations, args.data_dir, engines)
 
 
 if __name__ == "__main__":
