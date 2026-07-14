@@ -127,7 +127,7 @@ Benchmarks live under `benchmarks/` (`core`, `python`, `png`, `go-docker`, `rust
 
 ## Build
 
-Requires CMake 3.20+, a C++23 compiler (GCC 13+ or Clang 17+), and Python 3.10+ (for bindings).
+Requires CMake 3.20+, a C++23 compiler (GCC 13+ or Clang 17+), and Python 3.10+ (for the Python module). The optional bindings each need their own toolchain: **Emscripten** (WebAssembly), **Go 1.22+** (cgo), or **Rust 1.75+** (FFI) — see [Building the language bindings](#building-the-language-bindings).
 
 ```bash
 git clone --recursive https://github.com/thammegowda/pigzpp.git
@@ -154,6 +154,48 @@ make bench-py       # Benchmark Python: gzip vs zlib-ng vs isal vs pigzpp
 make bench-png      # Benchmark PNG encoding vs Pillow baseline
 make debug          # Debug build with sanitizers
 make clean          # Remove build artifacts
+```
+
+### Building the language bindings
+
+`make build` produces the CLI (and a Python module you can import from `build/` via `PYTHONPATH`). To install the Python package properly, or to build the WebAssembly / C-ABI surfaces, use the steps below.
+
+**Python** (pybind11) — install the `pigzpp` module into the active environment:
+
+```bash
+pip install .
+```
+
+**C ABI shared library** — the Go and Rust bindings link against `libpigzppc.so`:
+
+```bash
+cmake -DPIGZPP_BUILD_CAPI=ON -S . -B build
+cmake --build build --target pigzppc      # -> build/libpigzppc.so
+```
+
+The Go module lives in `src/go` and the Rust crate in `src/rust`; both locate `libpigzppc.so` in `build/` (override with `PIGZPP_BUILD_DIR` for Rust). Run `go test ./...` in `src/go` or `cargo test` in `src/rust` to verify.
+
+**WebAssembly** (Emscripten) — activate the emsdk, then run the build script:
+
+```bash
+# One-time: fetch the WASM-relevant submodules and activate Emscripten
+git submodule update --init third_party/zlib-ng third_party/zopfli
+source /path/to/emsdk/emsdk_env.sh        # provides emcmake/emmake
+
+scripts/build_wasm.sh                      # default: SIMD variant
+# or pick a variant explicitly:
+scripts/build_wasm.sh baseline             # portable (no SIMD, no threads)
+scripts/build_wasm.sh simd                 # 128-bit SIMD (all modern engines)
+scripts/build_wasm.sh threads              # SIMD + pthreads (parallel members)
+scripts/build_wasm.sh all                  # build all three
+```
+
+Each variant emits `build-wasm-<variant>/wasm/pigzpp_wasm.mjs` (plus the `.wasm`), an ES module you `import` (see [WebAssembly usage](#webassembly)). The **simd** build runs in all current browsers and Node 16+; the **threads** build needs cross-origin isolation (COOP/COEP headers) to enable `SharedArrayBuffer`. No Emscripten? `emsdk` installs in a minute:
+
+```bash
+git clone https://github.com/emscripten-core/emsdk && cd emsdk
+./emsdk install latest && ./emsdk activate latest
+source ./emsdk_env.sh
 ```
 
 ## Usage
