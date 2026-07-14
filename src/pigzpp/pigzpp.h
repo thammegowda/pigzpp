@@ -8,3 +8,4 @@
 #include "compress.h"
 #include "decompress.h"
 #include "png.h"
+#include "zip.h"

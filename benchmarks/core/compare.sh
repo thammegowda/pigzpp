@@ -5,8 +5,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PIGZPP="${SCRIPT_DIR}/../build/src/cli/pigzpp"
-PIGZ="${SCRIPT_DIR}/../../pigz/pigz"
+PIGZPP="${SCRIPT_DIR}/../../build/src/cli/pigzpp"
+PIGZ="${SCRIPT_DIR}/../../../pigz/pigz"
 
 # Check for required tools
 command -v hyperfine >/dev/null 2>&1 || { echo "Install hyperfine: cargo install hyperfine"; exit 1; }

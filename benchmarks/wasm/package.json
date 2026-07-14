@@ -1,0 +1,14 @@
+{
+  "name": "pigzpp-wasm-bench",
+  "private": true,
+  "type": "module",
+  "description": "Benchmark harness comparing pigzpp-wasm against CompressionStream, fflate, and pako.",
+  "scripts": {
+    "bench": "node bench.mjs"
+  },
+  "devDependencies": {
+    "fflate": "^0.8.2",
+    "jszip": "^3.10.1",
+    "pako": "^2.1.0"
+  }
+}

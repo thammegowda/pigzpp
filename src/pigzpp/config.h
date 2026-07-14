@@ -20,6 +20,7 @@ enum class Format : int {
     Gzip = 0,
     Zlib = 1,
     Zip = 2,
+    Raw = 3,   // Bare DEFLATE stream, no header/trailer (used for ZIP members).
 };
 
 // Operation mode.
@@ -37,6 +38,14 @@ enum class Strategy : int {
     HuffmanOnly = 2,  // Z_HUFFMAN_ONLY
     Rle = 3,          // Z_RLE
     Fixed = 4,        // Z_FIXED
+};
+
+// DEFLATE backend engine selection.
+enum class Engine : int {
+    Auto = 0,  // Pick the best available: ISA-L if built in, else zlib-ng.
+    Zlib = 1,  // Force zlib-ng (higher ratio, slower per core).
+    Isal = 2,  // Force ISA-L (faster, lower ratio); falls back to zlib-ng
+               // when not compiled in.
 };
 
 // Sliding dictionary size for deflate.
@@ -67,6 +76,9 @@ struct Config {
 
     // Compression strategy.
     Strategy strategy = Strategy::Default;
+
+    // DEFLATE backend engine (Auto picks ISA-L when compiled in).
+    Engine engine = Engine::Auto;
 
     // Output format.
     Format form = Format::Gzip;

@@ -1,0 +1,24 @@
+[package]
+name = "pigzpp-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "pigzpp-bench"
+path = "src/main.rs"
+
+[dependencies]
+# pigzpp Rust binding (FFI to libpigzppc)
+pigzpp = { path = "../../src/rust" }
+# Standard Rust gzip (miniz_oxide backend, single-threaded)
+flate2 = "1"
+# libdeflate bindings — very fast single-threaded gzip.
+# Pinned to 0.11 to match gzp's transitive libdeflate-sys (one links=libdeflate).
+libdeflater = "0.11"
+# gzp — parallel gzip (the direct multi-threaded competitor)
+gzp = "0.11"
+
+[profile.release]
+opt-level = 3
+lto = true

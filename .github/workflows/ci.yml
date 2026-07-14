@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # C++ core library + CLI binary + GoogleTest suite (test_cli.cpp exercises the
+  # built CLI via PIGZPP_BIN_PATH, so this covers both "core" and "bin").
+  core-cli:
+    name: Core + CLI (C++ tests)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y nasm cmake ninja-build
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DPIGZPP_BUILD_TESTS=ON
+          -DPIGZPP_BUILD_PYTHON=OFF
+          -DPIGZPP_STATIC=OFF
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+      - name: Run C++ tests
+        run: ctest --test-dir build --output-on-failure
+
+  # Python bindings (pybind11) built via scikit-build-core, then pytest.
+  python:
+    name: Python bindings
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y nasm cmake
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pigzpp
+        run: pip install -v .
+      - name: Install test deps
+        run: pip install pytest numpy pillow
+      - name: Run Python tests
+        run: pytest tests/test_python.py tests/test_zip.py tests/test_png.py -v
+
+  # Go binding (cgo -> libpigzppc.so).
+  go:
+    name: Go binding
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y nasm cmake ninja-build
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Build C ABI shared library
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DPIGZPP_BUILD_CAPI=ON
+          -DPIGZPP_BUILD_PYTHON=OFF
+          -DPIGZPP_BUILD_TESTS=OFF
+          -DPIGZPP_STATIC=OFF
+          && cmake --build build --target pigzppc -j"$(nproc)"
+      - name: Run Go tests
+        working-directory: src/go
+        run: go test -v ./...
+
+  # Rust binding (FFI -> libpigzppc.so).
+  rust:
+    name: Rust binding
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y nasm cmake ninja-build
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build C ABI shared library
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DPIGZPP_BUILD_CAPI=ON
+          -DPIGZPP_BUILD_PYTHON=OFF
+          -DPIGZPP_BUILD_TESTS=OFF
+          -DPIGZPP_STATIC=OFF
+          && cmake --build build --target pigzppc -j"$(nproc)"
+      - name: Run Rust tests
+        working-directory: src/rust
+        run: cargo test --release
+
+  # WebAssembly (Emscripten) module + Node smoke test.
+  wasm:
+    name: WebAssembly module
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Build WASM module (SIMD)
+        run: scripts/build_wasm.sh simd
+      - name: Run WASM smoke test
+        run: node tests/test_wasm.mjs

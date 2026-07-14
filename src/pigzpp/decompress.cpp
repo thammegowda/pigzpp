@@ -9,15 +9,19 @@
 #include "io.h"
 
 #include <atomic>
+#include <algorithm>
 #include <cassert>
 #include <climits>
 #include <condition_variable>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
+#include <vector>
 
+#include <unistd.h>
 #include <zlib.h>
 
 #ifdef PIGZPP_USE_ISAL
@@ -188,6 +192,59 @@ void Decompressor::decompress(int in_fd, int out_fd) {
 void Decompressor::list(int in_fd) {
     // For listing, decompress to /dev/null effectively
     infchk(in_fd, -1);
+}
+
+std::vector<uint8_t> Decompressor::decompress_buffer(const uint8_t* data, size_t size) {
+    // Fast path: gzip/zlib streams inflate directly in memory (auto-detect via
+    // windowBits 15+32), skipping the temp-fd round-trip. Zip framing and other
+    // cases fall through to the fd pipeline below.
+    const bool looks_gzip = size >= 2 && data[0] == 0x1f && data[1] == 0x8b;
+    const bool looks_zlib = size >= 2 && (data[0] & 0x0f) == 0x08 &&
+                            ((static_cast<unsigned>(data[0]) << 8 | data[1]) % 31) == 0;
+    if (looks_gzip || looks_zlib)
+        return direct_decompress(data, size);
+
+    // Fallback (zip framing, etc.): run the fd pipeline over tmpfs temp fds.
+    return run_via_temp_fds(data, size,
+                            [this](int in_fd, int out_fd) { decompress(in_fd, out_fd); });
+}
+
+std::vector<uint8_t> Decompressor::direct_decompress(const uint8_t* data, size_t size) {
+    z_stream zs{};
+    // windowBits 15+32: auto-detect gzip or zlib wrapper.
+    if (inflateInit2(&zs, 15 + 32) != Z_OK)
+        throw std::runtime_error("decompress_buffer: inflateInit2 failed");
+
+    std::vector<uint8_t> out(size ? size * 4 + 1024 : 1024);
+    const auto* in_ptr = reinterpret_cast<const Bytef*>(data);
+    size_t in_left = size;
+
+    int ret;
+    for (;;) {
+        if (zs.avail_in == 0 && in_left > 0) {
+            const uInt c = in_left > UINT_MAX ? UINT_MAX : static_cast<uInt>(in_left);
+            zs.next_in = const_cast<Bytef*>(in_ptr);
+            zs.avail_in = c;
+            in_ptr += c;
+            in_left -= c;
+        }
+        // Track the write position via total_out so a resize (realloc) is safe.
+        if (zs.total_out == out.size())
+            out.resize(out.size() + (out.size() >> 1) + 4096);
+        zs.next_out = out.data() + zs.total_out;
+        zs.avail_out = static_cast<uInt>(
+            std::min<size_t>(out.size() - zs.total_out, UINT_MAX));
+
+        ret = inflate(&zs, Z_NO_FLUSH);
+        if (ret == Z_STREAM_END) break;
+        if (ret != Z_OK) { // Z_BUF_ERROR here means truncated input.
+            inflateEnd(&zs);
+            throw std::runtime_error("decompress_buffer: inflate failed");
+        }
+    }
+    out.resize(zs.total_out);
+    inflateEnd(&zs);
+    return out;
 }
 
 void Decompressor::infchk(int in_fd, int out_fd) {

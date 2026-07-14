@@ -5,16 +5,24 @@
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 
+#include "compress.h"
+#include "config.h"
 #include "png.h"
+#include "zip.h"
 
 #include <zlib.h>
 
+#include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
+
+#include <unistd.h>
 
 namespace py = pybind11;
 
@@ -120,11 +128,17 @@ private:
 };
 
 
-// ---- Direct memory compress/decompress via raw CPython C API ----
-// These use zlib directly (not pigzpp_lib's fd-based API) because:
-// 1. We need to write directly into PyBytes objects (zero-copy output)
-// 2. We need fine-grained GIL release around inflate/deflate calls
-// 3. The fd-based Compressor/Decompressor add pipe/thread overhead
+// ---- In-memory compress/decompress ----
+// Small inputs use zlib directly via the CPython C API, which is optimal on
+// copies: the Py_buffer input is read in place and deflate writes straight
+// into the result PyBytes (zero intermediate copy), with the GIL released
+// around the deflate/inflate call.
+//
+// Large inputs (>= PARALLEL_MIN_BYTES) instead go through pigzpp's in-memory
+// buffer API (compress_bytes_parallel), which runs the multi-threaded ISA-L
+// pipeline. That costs one malloc->PyBytes copy of the (smaller) output, but
+// wins ~20x on realistic data by using all cores. Raw deflate and small inputs
+// stay on the single-threaded zero-copy path.
 //
 // Helper: read uncompressed size from gzip trailer (last 4 bytes).
 // Returns 0 if input is not gzip or too short.
@@ -208,19 +222,89 @@ compress_bytes(const Py_buffer &buf, int level, int window_bits, int strategy)
     return result;
 }
 
+// Threshold below which the single-threaded zero-copy path beats the parallel
+// pipeline (thread spawn + coordination overhead dominates for small inputs).
+static constexpr Py_ssize_t PARALLEL_MIN_BYTES = 1 << 20; // 1 MB
+
+// Parse an engine name ("auto"/"zlib"/"isal") to the backend enum.
+static pigzpp::Engine parse_engine(const char *s) {
+    if (!s || !std::strcmp(s, "auto")) return pigzpp::Engine::Auto;
+    if (!std::strcmp(s, "zlib") || !std::strcmp(s, "zlib-ng") ||
+        !std::strcmp(s, "zlibng")) return pigzpp::Engine::Zlib;
+    if (!std::strcmp(s, "isal") || !std::strcmp(s, "isa-l"))
+        return pigzpp::Engine::Isal;
+    return pigzpp::Engine::Auto;
+}
+
+// Parallel gzip/zlib compression via pigzpp's in-memory buffer API. Runs the
+// multi-threaded pipeline (ISA-L or zlib-ng per `engine`) and copies the owned
+// output into a PyBytes (one malloc->PyBytes copy). Not valid for raw deflate.
+static PyObject *
+compress_bytes_parallel(const Py_buffer &buf, int level,
+                        pigzpp::Format form, int strategy, int threads,
+                        pigzpp::Engine engine)
+{
+    pigzpp::Config cfg;
+    cfg.form = form;
+    cfg.mode = pigzpp::Mode::Compress;
+    cfg.level = level;
+    cfg.strategy = static_cast<pigzpp::Strategy>(strategy);
+    cfg.engine = engine;
+    cfg.procs = threads > 0 ? threads
+                            : static_cast<int>(std::thread::hardware_concurrency());
+    if (cfg.procs < 1) cfg.procs = 1;
+
+    uint8_t *out = nullptr;
+    size_t out_size = 0;
+    std::string err;
+
+    Py_BEGIN_ALLOW_THREADS
+    try {
+        pigzpp::Compressor comp(cfg);
+        out_size = comp.compress_buffer(
+            static_cast<const uint8_t *>(buf.buf),
+            static_cast<size_t>(buf.len), &out);
+    } catch (const std::exception &e) {
+        err = e.what();
+    } catch (...) {
+        err = "pigzpp: compression failed";
+    }
+    Py_END_ALLOW_THREADS
+
+    if (!err.empty()) {
+        std::free(out);
+        PyErr_SetString(PyExc_RuntimeError, err.c_str());
+        return NULL;
+    }
+
+    PyObject *result = PyBytes_FromStringAndSize(
+        reinterpret_cast<const char *>(out), static_cast<Py_ssize_t>(out_size));
+    std::free(out);
+    return result; // NULL propagates on allocation failure
+}
+
 static PyObject *
 pigzpp_compress(PyObject * /*module*/, PyObject *args, PyObject *kwargs)
 {
-    static const char *kwlist[] = {"data", "level", NULL};
+    static const char *kwlist[] = {"data", "level", "engine", NULL};
     Py_buffer buf;
     int level = 6;
+    const char *engine_s = "auto";
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "y*|i",
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "y*|is",
                                      const_cast<char**>(kwlist),
-                                     &buf, &level))
+                                     &buf, &level, &engine_s))
         return NULL;
 
-    PyObject *result = compress_bytes(buf, level, 15 + 16, Z_DEFAULT_STRATEGY);
+    pigzpp::Engine engine = parse_engine(engine_s);
+    PyObject *result;
+    // Explicit backend, or large input -> parallel pipeline; small auto -> the
+    // single-threaded zero-copy zlib path.
+    if (engine != pigzpp::Engine::Auto || buf.len >= PARALLEL_MIN_BYTES)
+        result = compress_bytes_parallel(buf, level, pigzpp::Format::Gzip,
+                                         Z_DEFAULT_STRATEGY, /*threads=*/0, engine);
+    else
+        result = compress_bytes(buf, level, 15 + 16, Z_DEFAULT_STRATEGY);
     PyBuffer_Release(&buf);
     return result;
 }
@@ -228,17 +312,24 @@ pigzpp_compress(PyObject * /*module*/, PyObject *args, PyObject *kwargs)
 static PyObject *
 pigzpp_compress_zlib(PyObject * /*module*/, PyObject *args, PyObject *kwargs)
 {
-    static const char *kwlist[] = {"data", "level", "strategy", NULL};
+    static const char *kwlist[] = {"data", "level", "strategy", "engine", NULL};
     Py_buffer buf;
     int level = 6;
     int strategy = Z_DEFAULT_STRATEGY;
+    const char *engine_s = "auto";
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "y*|ii",
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "y*|iis",
                                      const_cast<char**>(kwlist),
-                                     &buf, &level, &strategy))
+                                     &buf, &level, &strategy, &engine_s))
         return NULL;
 
-    PyObject *result = compress_bytes(buf, level, 15, strategy);
+    pigzpp::Engine engine = parse_engine(engine_s);
+    PyObject *result;
+    if (engine != pigzpp::Engine::Auto || buf.len >= PARALLEL_MIN_BYTES)
+        result = compress_bytes_parallel(buf, level, pigzpp::Format::Zlib,
+                                         strategy, /*threads=*/0, engine);
+    else
+        result = compress_bytes(buf, level, 15, strategy);
     PyBuffer_Release(&buf);
     return result;
 }
@@ -624,11 +715,188 @@ static py::array png_load_array(py::object path) {
     return png_image_to_array(std::move(image));
 }
 
+// ---- ZIP archive API (mirrors Python's zipfile) --------------------------
+
+namespace zipapi {
+
+using pigzpp::zip::EntryInfo;
+using pigzpp::zip::Method;
+using pigzpp::zip::WriteOptions;
+using pigzpp::zip::ZipReader;
+using pigzpp::zip::ZipWriter;
+
+// Convert unix seconds to a zipfile-style 6-tuple (year, month, day, h, m, s).
+static py::tuple date_time(int64_t mtime) {
+    std::time_t t = static_cast<std::time_t>(mtime);
+    std::tm tmv{};
+    localtime_r(&t, &tmv);
+    return py::make_tuple(tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+                          tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
+}
+
+// pigzpp.ZipFile — a subset of zipfile.ZipFile.
+//
+//   ZipFile(file, mode='r', compression=ZIP_DEFLATED, compresslevel=6,
+//           threads=0, engine='auto')
+//
+// Read mode ('r') exposes namelist/infolist/read/testzip/extract(all).
+// Write ('w') / exclusive ('x') / append ('a') expose write/writestr/mkdir.
+class PyZipFile {
+public:
+    PyZipFile(const std::string& file, const std::string& mode,
+              int compression, int compresslevel, int threads,
+              const std::string& engine)
+        : method_(static_cast<Method>(compression)),
+          level_(compresslevel),
+          threads_(threads),
+          engine_(parse_engine(engine.c_str())) {
+        if (mode == "r") {
+            reader_ = std::make_unique<ZipReader>(file);
+        } else if (mode == "w" || mode == "a" || mode == "x") {
+            if (mode == "x" && ::access(file.c_str(), F_OK) == 0)
+                throw std::runtime_error("pigzpp.ZipFile: file exists: " + file);
+            writer_ = std::make_unique<ZipWriter>(file, mode == "a" ? 'a' : 'w');
+        } else {
+            throw std::invalid_argument("mode must be 'r', 'w', 'x', or 'a'");
+        }
+    }
+
+    PyZipFile& enter() { return *this; }
+    void exit_() { close(); }
+
+    void close() {
+        if (writer_) { writer_->close(); writer_.reset(); }
+        reader_.reset();
+    }
+
+    WriteOptions opts(std::optional<int> compress_type,
+                      std::optional<int> compresslevel) const {
+        WriteOptions o;
+        o.method = compress_type ? static_cast<Method>(*compress_type) : method_;
+        o.level = compresslevel ? *compresslevel : level_;
+        o.threads = threads_;
+        o.engine = engine_;
+        return o;
+    }
+
+    void writestr(const std::string& name, py::object data,
+                  std::optional<int> compress_type,
+                  std::optional<int> compresslevel) {
+        require_writer();
+        if (py::isinstance<py::str>(data)) {
+            std::string s = data.cast<std::string>();
+            writer_->write_str(name, s, opts(compress_type, compresslevel));
+        } else {
+            py::buffer_info info = data.cast<py::buffer>().request();
+            writer_->write_bytes(name, static_cast<const uint8_t*>(info.ptr),
+                                 static_cast<size_t>(info.size * info.itemsize),
+                                 opts(compress_type, compresslevel));
+        }
+    }
+
+    void write(const std::string& filename, std::optional<std::string> arcname,
+               std::optional<int> compress_type, std::optional<int> compresslevel) {
+        require_writer();
+        writer_->write_file(filename, arcname.value_or(std::string{}),
+                            opts(compress_type, compresslevel));
+    }
+
+    void mkdir(const std::string& name) {
+        require_writer();
+        writer_->write_dir(name);
+    }
+
+    py::bytes read(const std::string& name) {
+        require_reader();
+        std::vector<uint8_t> data;
+        {
+            py::gil_scoped_release release;
+            data = reader_->read(name);
+        }
+        return py::bytes(reinterpret_cast<const char*>(data.data()), data.size());
+    }
+
+    std::vector<std::string> namelist() {
+        require_reader();
+        return reader_->namelist();
+    }
+
+    py::list infolist() {
+        require_reader();
+        py::list out;
+        for (const auto& e : reader_->entries()) out.append(make_info(e));
+        return out;
+    }
+
+    py::object getinfo(const std::string& name) {
+        require_reader();
+        const EntryInfo* e = reader_->info(name);
+        if (!e) throw py::key_error("no such member: " + name);
+        return make_info(*e);
+    }
+
+    py::object testzip() {
+        require_reader();
+        std::string bad = reader_->testzip();
+        if (bad.empty()) return py::none();
+        return py::str(bad);
+    }
+
+    std::string extract(const std::string& name, const std::string& path) {
+        require_reader();
+        return reader_->extract(name, path);
+    }
+
+    void extractall(const std::string& path) {
+        require_reader();
+        reader_->extractall(path);
+    }
+
+    py::object comment() {
+        if (reader_) return py::bytes(reader_->comment());
+        return py::bytes();
+    }
+
+    void set_comment(const std::string& c) {
+        require_writer();
+        writer_->set_comment(c);
+    }
+
+private:
+    void require_writer() const {
+        if (!writer_) throw std::runtime_error("pigzpp.ZipFile: not open for writing");
+    }
+    void require_reader() const {
+        if (!reader_) throw std::runtime_error("pigzpp.ZipFile: not open for reading");
+    }
+
+    static py::object make_info(const EntryInfo& e) {
+        py::dict d;
+        d["filename"] = e.name;
+        d["file_size"] = e.uncompressed_size;
+        d["compress_size"] = e.compressed_size;
+        d["CRC"] = e.crc32;
+        d["compress_type"] = static_cast<int>(e.method);
+        d["date_time"] = date_time(e.mtime);
+        d["_is_dir"] = e.is_dir;
+        d["comment"] = py::bytes(e.comment);
+        py::object types = py::module_::import("types");
+        return types.attr("SimpleNamespace")(**d);
+    }
+
+    Method method_;
+    int level_;
+    int threads_;
+    pigzpp::Engine engine_;
+    std::unique_ptr<ZipReader> reader_;
+    std::unique_ptr<ZipWriter> writer_;
+};
+
+} // namespace zipapi
+
 
 PYBIND11_MODULE(pigzpp, m) {
     m.doc() = "pigzpp: Fast gzip/zlib compression and PNG helpers (C++23 library with zlib-ng/ISA-L)";
-
-    // File-based API: pigzpp.open() — mirrors gzip.open()
     py::class_<GzFile>(m, "open",
         "Open a gzip file for reading or writing. Use as context manager.\n"
         "\n"
@@ -718,4 +986,58 @@ PYBIND11_MODULE(pigzpp, m) {
         py::arg("path"),
         "Load a supported PNG file and return a NumPy uint8 array with shape HxW or HxWxC."
     );
+
+    // ZIP archive API (mirrors a subset of Python's zipfile module).
+    m.attr("ZIP_STORED") = static_cast<int>(pigzpp::zip::Method::Store);
+    m.attr("ZIP_DEFLATED") = static_cast<int>(pigzpp::zip::Method::Deflate);
+
+    py::class_<zipapi::PyZipFile>(m, "ZipFile",
+        "Open a ZIP archive for reading ('r'), writing ('w'), exclusive create\n"
+        "('x'), or appending ('a'). Mirrors a subset of zipfile.ZipFile.\n"
+        "\n"
+        "Example:\n"
+        "    with pigzpp.ZipFile('out.zip', 'w') as z:\n"
+        "        z.writestr('hello.txt', 'hi')\n"
+        "        z.write('/path/to/file.bin')\n"
+        "    with pigzpp.ZipFile('out.zip') as z:\n"
+        "        print(z.namelist())\n"
+        "        data = z.read('hello.txt')")
+        .def(py::init<std::string, std::string, int, int, int, std::string>(),
+             py::arg("file"), py::arg("mode") = "r",
+             py::arg("compression") = static_cast<int>(pigzpp::zip::Method::Deflate),
+             py::arg("compresslevel") = 6, py::arg("threads") = 0,
+             py::arg("engine") = "auto")
+        .def("__enter__", &zipapi::PyZipFile::enter, py::return_value_policy::reference)
+        .def("__exit__", [](zipapi::PyZipFile& self, py::object, py::object, py::object) {
+            self.exit_();
+        })
+        .def("close", &zipapi::PyZipFile::close, "Finalize and close the archive.")
+        .def("namelist", &zipapi::PyZipFile::namelist, "List member names.")
+        .def("infolist", &zipapi::PyZipFile::infolist, "List member info objects.")
+        .def("getinfo", &zipapi::PyZipFile::getinfo, py::arg("name"),
+             "Return the info object for a member.")
+        .def("read", &zipapi::PyZipFile::read, py::arg("name"),
+             "Read and decompress a member, returning bytes.")
+        .def("writestr", &zipapi::PyZipFile::writestr,
+             py::arg("zinfo_or_arcname"), py::arg("data"),
+             py::arg("compress_type") = std::nullopt,
+             py::arg("compresslevel") = std::nullopt,
+             "Write a str/bytes payload as a member.")
+        .def("write", &zipapi::PyZipFile::write, py::arg("filename"),
+             py::arg("arcname") = std::nullopt,
+             py::arg("compress_type") = std::nullopt,
+             py::arg("compresslevel") = std::nullopt,
+             "Add a file from disk to the archive.")
+        .def("mkdir", &zipapi::PyZipFile::mkdir, py::arg("name"),
+             "Add a directory entry.")
+        .def("testzip", &zipapi::PyZipFile::testzip,
+             "Return the name of the first corrupt member, or None if all are OK.")
+        .def("extract", &zipapi::PyZipFile::extract, py::arg("member"),
+             py::arg("path") = ".", "Extract a member to path; returns the file path.")
+        .def("extractall", &zipapi::PyZipFile::extractall, py::arg("path") = ".",
+             "Extract all members to path.")
+        .def("setcomment", &zipapi::PyZipFile::set_comment, py::arg("comment"),
+             "Set the archive-level comment (write mode).")
+        .def_property_readonly("comment", &zipapi::PyZipFile::comment,
+             "The archive-level comment (bytes).");
 }

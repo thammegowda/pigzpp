@@ -3,6 +3,9 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <vector>
 
 namespace pigzpp {
 
@@ -12,5 +15,14 @@ size_t readn(int fd, unsigned char* buf, size_t len);
 
 // Write exactly len bytes to fd. Throws on error. Returns len.
 size_t writen(int fd, const unsigned char* buf, size_t len);
+
+// Run an fd-based operation on an in-memory buffer using tmpfs-backed temp fds.
+// Writes `data` to a temp input fd, invokes op(in_fd, out_fd), and returns the
+// bytes written to the temp output fd. Used by the buffer-API fallbacks for
+// paths that still require seekable fds (zip, zopfli, rsync, decompress).
+// Throws std::runtime_error on I/O failure.
+std::vector<uint8_t> run_via_temp_fds(
+    const uint8_t* data, size_t size,
+    const std::function<void(int in_fd, int out_fd)>& op);
 
 } // namespace pigzpp

@@ -64,6 +64,7 @@ Options:
   -N, --name            Store or restore file name and mod time
   -O  --oneblock        Do not split into smaller blocks for -11
   -p, --processes n     Allow up to n compression threads
+  -E, --engine e        DEFLATE backend: auto (default), zlib, or isal
   -q, --quiet           Print no messages, even on error
   -r, --recursive       Process the contents of all subdirectories
   -R, --rsyncable       Input-determined block locations for rsync
@@ -92,11 +93,19 @@ static char long_to_short(std::string_view arg) {
         {"to-stdout", 'c'}, {"suffix", 'S'}, {"synchronous", 'Y'},
         {"test", 't'}, {"uncompress", 'd'}, {"verbose", 'v'},
         {"version", 'V'}, {"zip", 'K'}, {"zlib", 'z'}, {"rle", 'U'},
-        {"silent", 'q'},
+        {"silent", 'q'}, {"engine", 'E'},
     };
     for (auto& [l, s] : map)
         if (arg == l) return s;
     return 0;
+}
+
+// Parse a --engine value ("auto"/"zlib"/"isal") to the backend enum.
+static Engine parse_engine_name(std::string_view s) {
+    if (s == "auto") return Engine::Auto;
+    if (s == "zlib" || s == "zlib-ng" || s == "zlibng") return Engine::Zlib;
+    if (s == "isal" || s == "isa-l") return Engine::Isal;
+    throw std::runtime_error("invalid --engine (use auto|zlib|isal)");
 }
 
 // Find compressed suffix length.
@@ -373,6 +382,9 @@ int main(int argc, char** argv) {
             case 'A':
                 cfg.alias = arg;
                 break;
+            case 'E':
+                cfg.engine = parse_engine_name(arg);
+                break;
             default: break;
             }
             need_param = 0;
@@ -417,6 +429,7 @@ int main(int argc, char** argv) {
                     case 'J': cfg.zopts.blocksplittingmax = std::stoi(param_str); break;
                     case 'C': cfg.comment = param_str; break;
                     case 'A': cfg.alias = param_str; break;
+                    case 'E': cfg.engine = parse_engine_name(param_str); break;
                     default: break;
                     }
                     need_param = 0;
@@ -442,6 +455,7 @@ int main(int argc, char** argv) {
                 case 'c': cfg.pipeout = true; break;
                 case 'C': need_param = 'C'; break;
                 case 'd': cfg.mode = Mode::Decompress; break;
+                case 'E': need_param = 'E'; break;
                 case 'f': cfg.force = true; break;
                 case 'F': cfg.zopts.blocksplittinglast = 1; break;
                 case 'h': show_help(); break;

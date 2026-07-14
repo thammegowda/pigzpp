@@ -57,7 +57,18 @@ static void put_be(std::vector<unsigned char>& v, uint64_t val, int bytes) {
 }
 
 size_t put_header(int fd, const Config& cfg) {
+    std::vector<unsigned char> hdr = build_header(cfg);
+    writen(fd, hdr.data(), hdr.size());
+    return hdr.size();
+}
+
+std::vector<unsigned char> build_header(const Config& cfg) {
     std::vector<unsigned char> hdr;
+
+    if (cfg.form == Format::Raw) {
+        // Bare DEFLATE stream: no framing.
+        return hdr;
+    }
 
     if (cfg.form == Format::Zip) {
         const std::string& fname = cfg.name.empty() ? cfg.alias : cfg.name;
@@ -119,16 +130,38 @@ size_t put_header(int fd, const Config& cfg) {
         }
     }
 
-    writen(fd, hdr.data(), hdr.size());
-    return hdr.size();
+    return hdr;
 }
 
 static constexpr uint64_t LOW32 = 0xffffffff;
+
+std::vector<unsigned char> build_trailer_simple(const Config& cfg,
+                                                uint64_t ulen,
+                                                unsigned long check) {
+    std::vector<unsigned char> tlr;
+    if (cfg.form == Format::Raw) {
+        // Bare DEFLATE stream: no trailer.
+        return tlr;
+    }
+    if (cfg.form == Format::Zlib) {
+        // Big-endian Adler-32.
+        put_be(tlr, check, 4);
+    } else { // Gzip
+        put_le(tlr, check, 4);
+        put_le(tlr, ulen & LOW32, 4);
+    }
+    return tlr;
+}
 
 void put_trailer(int fd, const Config& cfg,
                  uint64_t ulen, uint64_t clen,
                  unsigned long check, size_t head) {
     std::vector<unsigned char> tlr;
+
+    if (cfg.form == Format::Raw) {
+        // Bare DEFLATE stream: no trailer.
+        return;
+    }
 
     if (cfg.form == Format::Zip) {
         // Zip64 data descriptor
