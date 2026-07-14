@@ -83,6 +83,16 @@ At 8 threads pigzpp-wasm reaches **~179 MB/s** (4.7x over single-thread, ~6x nat
 
 pigzpp's `fast` preset encodes PNGs **8.6× faster than Pillow's default** at a comparable size; `balanced` is 5.5× faster and slightly smaller, while `small` matches Pillow's smallest output. Grayscale and 1-bit mask images show the same pattern (`fast` ≈ 6–7× Pillow). Reproduce: `python benchmarks/png/bench_png.py --image-dir <dir> --mode rgb --verify`.
 
+**ZIP archives (Python API)** — `pigzpp.ZipFile` vs the standard library's `zipfile`, both writing real DEFLATE archives and reading them back (128 MB text, level 6, 8 threads, best-of-3):
+
+| writer | write MB/s | ratio | read MB/s |
+|---|---:|---:|---:|
+| zipfile (stdlib) | 17 | 2.83 | 208 |
+| **pigzpp `isal`** | **554** | 2.58 | 474 |
+| pigzpp `zlib` | 220 | 2.81 | 375 |
+
+pigzpp parallelizes each member's DEFLATE, so it writes **13× faster than `zipfile`** at the same ratio (`zlib`) and up to **31× faster** with `isal`, and reads ~2× faster. Reproduce: `python benchmarks/python/bench_zip.py --sizes 128 --members 1,16`.
+
 Benchmarks live under `benchmarks/` (`core`, `python`, `png`, `go-docker`, `rust`, `wasm`), all reading the shared corpus in `build/bench_data/`. See [notes/05-summary.md](notes/05-summary.md) for the earlier large-core CLI runs (48-core Xeon) and thread-scaling detail.
 
 ## Build
