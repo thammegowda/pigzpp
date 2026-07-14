@@ -164,5 +164,5 @@ endif()
 # Benchmarks
 option(PIGZPP_BUILD_BENCHMARKS "Build benchmarks" ON)
 if(PIGZPP_BUILD_BENCHMARKS)
-    add_subdirectory(benchmarks)
+    add_subdirectory(benchmarks/core)
 endif()
