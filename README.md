@@ -93,6 +93,8 @@ pigzpp's `fast` preset encodes PNGs **8.6× faster than Pillow's default** at a 
 
 pigzpp parallelizes each member's DEFLATE, so it writes **13× faster than `zipfile`** at the same ratio (`zlib`) and up to **31× faster** with `isal`, and reads ~2× faster. Reproduce: `python benchmarks/python/bench_zip.py --sizes 128 --members 1,16`.
 
+In WebAssembly the same ZIP classes beat the popular JS libraries too. Reading a real **6 MB `.docx`** (19 MB of XML across its parts — DOCX/XLSX/EPUB/JAR are all ZIPs), single-thread, Node 22: pigzpp-wasm **253 MB/s** vs fflate 111 vs JSZip 87; creating a 50-member archive is ~3–5× faster. Reproduce: `node benchmarks/wasm/zip.mjs --file document.docx`.
+
 Benchmarks live under `benchmarks/` (`core`, `python`, `png`, `go-docker`, `rust`, `wasm`), all reading the shared corpus in `build/bench_data/`. See [notes/05-summary.md](notes/05-summary.md) for the earlier large-core CLI runs (48-core Xeon) and thread-scaling detail.
 
 ## Build
