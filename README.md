@@ -93,7 +93,22 @@ pigzpp's `fast` preset encodes PNGs **8.6× faster than Pillow's default** at a 
 
 pigzpp parallelizes each member's DEFLATE, so it writes **13× faster than `zipfile`** at the same ratio (`zlib`) and up to **31× faster** with `isal`, and reads ~2× faster. Reproduce: `python benchmarks/python/bench_zip.py --sizes 128 --members 1,16`.
 
-In WebAssembly the same ZIP classes beat the popular JS libraries too. Reading a real **6 MB `.docx`** (19 MB of XML across its parts — DOCX/XLSX/EPUB/JAR are all ZIPs), single-thread, Node 22: pigzpp-wasm **253 MB/s** vs fflate 111 vs JSZip 87. Creating a 50-member archive is ~3× faster single-threaded and, with the threaded WASM build, up to **2.5× faster again** at 4 threads on large members. Reproduce: `node benchmarks/wasm/zip.mjs --file document.docx`.
+**ZIP archives (WebAssembly)** — the same `ZipWriter`/`ZipReader` classes vs the two common JS zip libraries, **fflate** and **JSZip** (16 MB corpus, Node 22, single-thread + SIMD, level 6). DOCX/XLSX/EPUB/JAR are all ZIP containers, so "open a document and read its parts" is the *unzip all* row:
+
+| create archive | 50 members | 4 large members | ratio |
+|---|---:|---:|---:|
+| **pigzpp-wasm** (t=4) | **67** | **109** | 2.78 |
+| pigzpp-wasm (t=1) | 42 | 44 | 2.78 |
+| fflate | 15 | 15 | 2.72 |
+| JSZip | 9 | 9 | 2.80 |
+
+| read + unzip all (MB/s) | 50-member archive | real 6 MB `.docx` |
+|---|---:|---:|
+| **pigzpp-wasm** | **339** | **253** |
+| fflate | 115 | 111 |
+| JSZip | 89 | 87 |
+
+Even single-threaded, pigzpp-wasm creates archives ~3–5× faster and reads them ~2–3× faster than the popular JS libraries at an equal-or-better ratio; the threaded build (`t=4`) widens the create gap up to 2.5× more on large members. Reproduce: `node benchmarks/wasm/zip.mjs --file document.docx` (or `--members 50 --threads 1,4` against the threaded build).
 
 Benchmarks live under `benchmarks/` (`core`, `python`, `png`, `go-docker`, `rust`, `wasm`), all reading the shared corpus in `build/bench_data/`. See [notes/05-summary.md](notes/05-summary.md) for the earlier large-core CLI runs (48-core Xeon) and thread-scaling detail.
 
