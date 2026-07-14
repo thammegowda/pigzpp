@@ -29,7 +29,8 @@ build_variant() {
     echo "=== Building variant: ${name} (${dir}) ==="
     rm -rf "${dir}"
     mkdir -p "${dir}"
-    ( cd "${dir}" && emcmake cmake .. -DCMAKE_BUILD_TYPE=Release "$@" >/dev/null )
+    ( cd "${dir}" && emcmake cmake .. -DCMAKE_BUILD_TYPE=Release \
+        -DPIGZPP_DISTRIBUTION_BUILD=ON "$@" >/dev/null )
     ( cd "${dir}" && emmake make pigzpp_wasm -j"$(nproc 2>/dev/null || echo 4)" )
     echo "--> ${ROOT}/${dir}/wasm/pigzpp_wasm.mjs"
 }

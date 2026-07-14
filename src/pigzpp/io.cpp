@@ -1,18 +1,18 @@
-#include "io.h"
+#include "io_utils.h"
+#include "platform.h"
 
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
 #include <string>
-#include <unistd.h>
 
 namespace pigzpp {
 
 size_t readn(int fd, unsigned char* buf, size_t len) {
     size_t got = 0;
     while (got < len) {
-        auto ret = ::read(fd, buf + got, len - got);
+        auto ret = platform::read(fd, buf + got, len - got);
         if (ret < 0) {
             if (errno == EINTR) continue;
             throw std::runtime_error("read error: " + std::string(strerror(errno)));
@@ -26,7 +26,7 @@ size_t readn(int fd, unsigned char* buf, size_t len) {
 size_t writen(int fd, const unsigned char* buf, size_t len) {
     size_t written = 0;
     while (written < len) {
-        auto ret = ::write(fd, buf + written, len - written);
+        auto ret = platform::write(fd, buf + written, len - written);
         if (ret < 0) {
             if (errno == EINTR) continue;
             throw std::runtime_error("write error: " + std::string(strerror(errno)));
@@ -55,19 +55,19 @@ std::vector<uint8_t> run_via_temp_fds(
             throw std::runtime_error("run_via_temp_fds: temp input write failed");
         std::fflush(in);
 
-        const int in_fd = fileno(in);
-        const int out_fd = fileno(out);
+        const int in_fd = platform::fileno(in);
+        const int out_fd = platform::fileno(out);
         if (in_fd < 0 || out_fd < 0)
             throw std::runtime_error("run_via_temp_fds: fileno failed");
-        if (lseek(in_fd, 0, SEEK_SET) == static_cast<off_t>(-1))
+        if (platform::seek(in_fd, 0, SEEK_SET) < 0)
             throw std::runtime_error("run_via_temp_fds: lseek(input) failed");
 
         op(in_fd, out_fd);
 
-        const off_t osize = lseek(out_fd, 0, SEEK_END);
-        if (osize == static_cast<off_t>(-1))
+        const int64_t osize = platform::seek(out_fd, 0, SEEK_END);
+        if (osize < 0)
             throw std::runtime_error("run_via_temp_fds: lseek(output) failed");
-        lseek(out_fd, 0, SEEK_SET);
+        platform::seek(out_fd, 0, SEEK_SET);
         std::vector<uint8_t> result(osize > 0 ? static_cast<size_t>(osize) : 0);
         const size_t got = readn(out_fd, result.data(), result.size());
         result.resize(got);

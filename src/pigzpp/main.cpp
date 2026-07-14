@@ -2,6 +2,7 @@
 // Drop-in replacement for pigz with compatible CLI interface.
 
 #include "pigzpp.h"
+#include "platform.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -12,26 +13,28 @@
 #include <signal.h>
 #include <string>
 #include <string_view>
-#include <sys/stat.h>
+#if !defined(_WIN32)
 #include <sys/time.h>
-#include <unistd.h>
-#include <fcntl.h>
+#endif
 #include <vector>
 
 namespace fs = std::filesystem;
 
 using namespace pigzpp;
 
-static const char* VERSION_STR = "pigzpp 1.0.0 (based on pigz 2.8)";
+#ifndef PIGZPP_VERSION
+#define PIGZPP_VERSION "unknown"
+#endif
+static const char* VERSION_STR = "pigzpp " PIGZPP_VERSION " (based on pigz 2.8)";
 static std::string g_outf; // for signal handler cleanup
 static int g_outd = -1;
 
 static void cut_short(int) {
     if (g_outd != -1 && g_outd != 1) {
-        ::unlink(g_outf.c_str());
+        platform::unlink(g_outf.c_str());
         g_outd = -1;
     }
-    _exit(EINTR);
+    std::_Exit(EINTR);
 }
 
 static void show_help() {
@@ -127,35 +130,44 @@ static size_t compressed_suffix(const std::string& name) {
 
 // Get just the filename from a path.
 static std::string justname(const std::string& path) {
-    auto pos = path.rfind('/');
-    return pos == std::string::npos ? path : path.substr(pos + 1);
+    return fs::path(path).filename().string();
 }
 
 // Copy file metadata (permissions, timestamps).
 static void copymeta(const std::string& from, const std::string& to) {
-    struct stat st{};
-    if (::stat(from.c_str(), &st) != 0) return;
+#if defined(_WIN32)
+    std::error_code error;
+    fs::permissions(to, fs::status(from, error).permissions(),
+                    fs::perm_options::replace, error);
+    error.clear();
+    auto timestamp = fs::last_write_time(from, error);
+    if (!error)
+        fs::last_write_time(to, timestamp, error);
+#else
+    platform::FileStat st{};
+    if (platform::stat(from.c_str(), &st) != 0) return;
     ::chmod(to.c_str(), st.st_mode & 07777);
-    ::chown(to.c_str(), st.st_uid, st.st_gid);
+    (void) ::chown(to.c_str(), st.st_uid, st.st_gid);
     struct timeval times[2] = {
         {st.st_atime, 0},
         {st.st_mtime, 0}
     };
     ::utimes(to.c_str(), times);
+#endif
 }
 
 // Process a single file (or stdin if path is empty).
 static void process(const std::string& path, Config& cfg) {
     std::string inf;
     int ind = -1;
-    struct stat st{};
+    platform::FileStat st{};
     bool is_stdin = path.empty();
 
     if (is_stdin) {
         inf = "<stdin>";
         ind = 0;
         cfg.name.clear();
-        if ((cfg.headis & 2) && fstat(0, &st) == 0 && S_ISREG(st.st_mode))
+        if ((cfg.headis & 2) && platform::fstat(0, &st) == 0 && platform::is_regular(st))
             cfg.mtime = st.st_mtime;
         else
             cfg.mtime = 0;
@@ -164,17 +176,17 @@ static void process(const std::string& path, Config& cfg) {
         static const char* sufs[] = {".z", "-z", "_z", ".Z", ".gz", "-gz", ".zz", "-zz",
                                      ".zip", ".ZIP", ".tgz", nullptr};
 
-        if (::lstat(inf.c_str(), &st) != 0) {
+        if (platform::lstat(inf.c_str(), &st) != 0) {
             if (errno == ENOENT && (cfg.mode == Mode::List || cfg.mode == Mode::Decompress || cfg.mode == Mode::Test)) {
                 for (auto* s = sufs; *s; ++s) {
                     std::string try_name = path + *s;
-                    if (::lstat(try_name.c_str(), &st) == 0) {
+                    if (platform::lstat(try_name.c_str(), &st) == 0) {
                         inf = try_name;
                         break;
                     }
                 }
             }
-            if (::lstat(inf.c_str(), &st) != 0) {
+            if (platform::lstat(inf.c_str(), &st) != 0) {
                 if (cfg.verbosity > 0)
                     std::cerr << "pigzpp: skipping: " << inf << " does not exist\n";
                 return;
@@ -182,18 +194,18 @@ static void process(const std::string& path, Config& cfg) {
         }
 
         // Type checks
-        if (!S_ISREG(st.st_mode) && !S_ISFIFO(st.st_mode) &&
-            !S_ISLNK(st.st_mode) && !S_ISDIR(st.st_mode)) {
+        if (!platform::is_regular(st) && !platform::is_fifo(st) &&
+            !platform::is_symlink(st) && !platform::is_directory(st)) {
             if (cfg.verbosity > 0)
                 std::cerr << "pigzpp: skipping: " << inf << " is a special file\n";
             return;
         }
-        if (S_ISLNK(st.st_mode) && !cfg.force && !cfg.pipeout) {
+        if (platform::is_symlink(st) && !cfg.force && !cfg.pipeout) {
             if (cfg.verbosity > 0)
                 std::cerr << "pigzpp: skipping: " << inf << " is a symbolic link\n";
             return;
         }
-        if (S_ISDIR(st.st_mode)) {
+        if (platform::is_directory(st)) {
             if (!cfg.recurse) {
                 if (cfg.verbosity > 0)
                     std::cerr << "pigzpp: skipping: " << inf << " is a directory\n";
@@ -223,7 +235,7 @@ static void process(const std::string& path, Config& cfg) {
             return;
         }
 
-        ind = ::open(inf.c_str(), O_RDONLY);
+        ind = platform::open(inf.c_str(), O_RDONLY);
         if (ind < 0) {
             if (cfg.verbosity > 0)
                 std::cerr << "pigzpp: " << inf << ": " << strerror(errno) << "\n";
@@ -241,9 +253,9 @@ static void process(const std::string& path, Config& cfg) {
     if (is_stdin || cfg.pipeout) {
         outf = "<stdout>";
         outd = 1;
-        if (cfg.mode == Mode::Compress && !cfg.force && isatty(1)) {
+        if (cfg.mode == Mode::Compress && !cfg.force && platform::isatty(1)) {
             std::cerr << "pigzpp: refusing to write compressed data to terminal (use -f)\n";
-            if (ind > 0) ::close(ind);
+            if (ind > 0) platform::close(ind);
             return;
         }
     } else if (cfg.mode == Mode::List || cfg.mode == Mode::Test) {
@@ -254,31 +266,31 @@ static void process(const std::string& path, Config& cfg) {
         outf = inf.substr(0, inf.size() - suf);
         if (inf.substr(inf.size() - suf) == ".tgz")
             outf += ".tar";
-        outd = ::open(outf.c_str(), O_CREAT | O_TRUNC | O_WRONLY | (cfg.force ? 0 : O_EXCL), 0600);
+        outd = platform::open(outf.c_str(), O_CREAT | O_TRUNC | O_WRONLY | (cfg.force ? 0 : O_EXCL), 0600);
         if (outd < 0 && errno == EEXIST) {
             if (cfg.verbosity > 0)
                 std::cerr << "pigzpp: skipping: " << outf << " exists (use -f to overwrite)\n";
-            if (ind > 0) ::close(ind);
+            if (ind > 0) platform::close(ind);
             return;
         }
         if (outd < 0) {
             std::cerr << "pigzpp: " << outf << ": " << strerror(errno) << "\n";
-            if (ind > 0) ::close(ind);
+            if (ind > 0) platform::close(ind);
             return;
         }
     } else {
         // Compress
         outf = inf + cfg.sufx;
-        outd = ::open(outf.c_str(), O_CREAT | O_TRUNC | O_WRONLY | (cfg.force ? 0 : O_EXCL), 0600);
+        outd = platform::open(outf.c_str(), O_CREAT | O_TRUNC | O_WRONLY | (cfg.force ? 0 : O_EXCL), 0600);
         if (outd < 0 && errno == EEXIST) {
             if (cfg.verbosity > 0)
                 std::cerr << "pigzpp: skipping: " << outf << " exists (use -f to overwrite)\n";
-            if (ind > 0) ::close(ind);
+            if (ind > 0) platform::close(ind);
             return;
         }
         if (outd < 0) {
             std::cerr << "pigzpp: " << outf << ": " << strerror(errno) << "\n";
-            if (ind > 0) ::close(ind);
+            if (ind > 0) platform::close(ind);
             return;
         }
     }
@@ -301,32 +313,34 @@ static void process(const std::string& path, Config& cfg) {
     } catch (const std::exception& e) {
         std::cerr << "pigzpp: " << inf << ": " << e.what() << "\n";
         if (outd > 1) {
-            ::close(outd);
-            ::unlink(outf.c_str());
+            platform::close(outd);
+            platform::unlink(outf.c_str());
         }
-        if (ind > 0) ::close(ind);
+        if (ind > 0) platform::close(ind);
         g_outd = -1;
         return;
     }
 
     // Clean up
     if (outd > 1) {
-        if (cfg.sync) ::fsync(outd);
-        ::close(outd);
+        if (cfg.sync) platform::sync(outd);
+        platform::close(outd);
     }
     g_outd = -1;
 
     if (ind > 0) {
-        ::close(ind);
+        platform::close(ind);
         if (!is_stdin && outd > 1) {
             copymeta(inf, outf);
             if (!cfg.keep)
-                ::unlink(inf.c_str());
+                platform::unlink(inf.c_str());
         }
     }
 }
 
 int main(int argc, char** argv) {
+    platform::set_binary(0);
+    platform::set_binary(1);
     Config cfg;
     std::vector<std::string> files;
 

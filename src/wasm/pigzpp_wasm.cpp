@@ -117,7 +117,10 @@ val png_decode(const val& input) {
 }
 
 std::string version() {
-    return "pigzpp-wasm 1.1.0";
+#ifndef PIGZPP_VERSION
+#define PIGZPP_VERSION "unknown"
+#endif
+    return "pigzpp-wasm " PIGZPP_VERSION;
 }
 
 bool threads_enabled() {

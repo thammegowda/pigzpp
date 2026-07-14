@@ -2,7 +2,8 @@
 
 #include "format.h"
 #include "crc.h"
-#include "io.h"
+#include "io_utils.h"
+#include "platform.h"
 
 #include <cstring>
 #include <ctime>
@@ -18,7 +19,7 @@ uint32_t time2dos(int64_t t) {
     if (t == 0) return 0;
     time_t tt = static_cast<time_t>(t);
     struct tm tm{};
-    localtime_r(&tt, &tm);
+    platform::localtime(tt, tm);
     return static_cast<uint32_t>(
         ((tm.tm_year - 80) << 25) |
         ((tm.tm_mon + 1) << 21) |
@@ -318,7 +319,7 @@ void InputReader::close() {
     in_short_ = true;
     in_eof_ = true;
     if (fd_ > 0) {
-        ::close(fd_);
+        platform::close(fd_);
         fd_ = -1;
     }
 }

@@ -1,0 +1,269 @@
+name: Distribution
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x86_64
+            runner: ubuntu-24.04
+            os: linux
+            wheel-arch: x86_64
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+            os: linux
+            wheel-arch: aarch64
+          - target: macos-x86_64
+            runner: macos-15-intel
+            os: macos
+            wheel-arch: x86_64
+          - target: macos-arm64
+            runner: macos-15
+            os: macos
+            wheel-arch: arm64
+          - target: windows-x86_64
+            runner: windows-2025
+            os: windows
+            wheel-arch: AMD64
+          - target: windows-arm64
+            runner: windows-11-arm
+            os: windows
+            wheel-arch: ARM64
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install Linux build tools
+        if: matrix.os == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build nasm
+
+      - name: Install NASM on Windows x86_64
+        if: matrix.target == 'windows-x86_64'
+        shell: pwsh
+        run: |
+          choco install nasm -y
+          "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Configure native archive (Unix)
+        if: matrix.os != 'windows'
+        run: >-
+          cmake -S . -B build-dist -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DPIGZPP_BUILD_PYTHON=OFF
+          -DPIGZPP_BUILD_TESTS=OFF
+          -DPIGZPP_BUILD_BENCHMARKS=OFF
+          -DPIGZPP_STATIC=ON
+          -DPIGZPP_DISTRIBUTION_BUILD=ON
+          -DPIGZPP_LTO=ON
+
+      - name: Configure native archive (Windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: >-
+          cmake -S . -B build-dist
+          -DPIGZPP_BUILD_PYTHON=OFF
+          -DPIGZPP_BUILD_TESTS=OFF
+          -DPIGZPP_BUILD_BENCHMARKS=OFF
+          -DPIGZPP_STATIC=ON
+          -DPIGZPP_DISTRIBUTION_BUILD=ON
+          -DPIGZPP_LTO=ON
+
+      - name: Build native archive
+        run: cmake --build build-dist --config Release --target package --parallel
+
+      - name: Verify native CLI (Unix)
+        if: matrix.os != 'windows'
+        run: |
+          build-dist/pigzpp --version | grep '1.1.0'
+          printf 'native archive smoke test\n%.0s' {1..1000} > input.txt
+          build-dist/pigzpp -c input.txt > output.gz
+          build-dist/pigzpp -dc output.gz > restored.txt
+          cmp input.txt restored.txt
+
+      - name: Verify native CLI (Windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem build-dist -Recurse -Filter pigzpp.exe | Select-Object -First 1
+          if (-not $exe) { throw "pigzpp.exe was not built" }
+          $version = & $exe.FullName --version
+          if ($version -notmatch "1\.1\.0") { throw "unexpected version: $version" }
+
+      - name: Install Windows dependency inspector
+        if: matrix.os == 'windows'
+        run: python -m pip install pefile
+
+      - name: Verify fully static Linux archive
+        if: matrix.os == 'linux'
+        run: python3 scripts/check_dist_dependencies.py --fully-static 'build-dist/pigzpp-*.tar.gz'
+
+      - name: Verify self-contained macOS archive
+        if: matrix.os == 'macos'
+        run: python3 scripts/check_dist_dependencies.py 'build-dist/pigzpp-*.tar.gz'
+
+      - name: Verify self-contained Windows archive
+        if: matrix.os == 'windows'
+        run: python scripts/check_dist_dependencies.py --static-windows-crt 'build-dist/pigzpp-*.zip'
+
+      - name: Upload native archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.target }}
+          path: |
+            build-dist/pigzpp-*.tar.gz
+            build-dist/pigzpp-*.zip
+          if-no-files-found: error
+
+      - name: Build and test CPython 3.12 ABI3 wheel
+        uses: pypa/cibuildwheel@v4.1.0
+        env:
+          CIBW_ARCHS: ${{ matrix.wheel-arch }}
+        with:
+          output-dir: wheelhouse
+
+      - name: Verify wheel has no dynamic compression libraries
+        run: >-
+          python scripts/check_dist_dependencies.py
+          --static-cpp-runtime --static-windows-crt
+          'wheelhouse/*.whl'
+
+      - name: Upload ABI3 wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.target }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  wasm:
+    name: WebAssembly variants
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Build and test all variants
+        run: |
+          scripts/build_wasm.sh all
+          for variant in baseline simd threads; do
+            node tests/test_wasm.mjs "build-wasm-${variant}/wasm/pigzpp_wasm.mjs"
+          done
+      - name: Create WebAssembly archives
+        run: |
+          mkdir -p wasm-dist
+          version=$(sed -n 's/^project(pigzpp VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)
+          for variant in baseline simd threads; do
+            staging="pigzpp-wasm-${version}-${variant}"
+            mkdir -p "$staging"
+            cp -a "build-wasm-${variant}/wasm/." "$staging/"
+            cp LICENSE "$staging/"
+            tar -czf "wasm-dist/${staging}.tar.gz" "$staging"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm
+          path: wasm-dist/*.tar.gz
+          if-no-files-found: error
+
+  manifest:
+    name: Validate distribution
+    needs: [native, wasm]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Validate version tag
+        run: |
+          project_version=$(sed -n 's/^project(pigzpp VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)
+          python_version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml | head -1)
+          test "$project_version" = "$python_version" || {
+            echo "CMake version $project_version does not match Python version $python_version" >&2
+            exit 1
+          }
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag_version=${GITHUB_REF_NAME#v}
+            test "$project_version" = "$tag_version" || {
+              echo "tag $tag_version does not match project $project_version" >&2
+              exit 1
+            }
+          fi
+
+      - name: Validate artifacts and create checksums
+        run: |
+          wheel_count=$(find dist -type f -name '*.whl' | wc -l)
+          native_count=$(find dist -type f \( -name 'pigzpp-*-linux-*.tar.gz' -o -name 'pigzpp-*-macos-*.tar.gz' -o -name 'pigzpp-*-windows-*.zip' \) | wc -l)
+          wasm_count=$(find dist -type f -name 'pigzpp-wasm-*.tar.gz' | wc -l)
+          test "$wheel_count" -eq 6 || { echo "expected 6 wheels, found $wheel_count" >&2; exit 1; }
+          test "$native_count" -eq 6 || { echo "expected 6 native archives, found $native_count" >&2; exit 1; }
+          test "$wasm_count" -eq 3 || { echo "expected 3 WASM archives, found $wasm_count" >&2; exit 1; }
+          python3 scripts/report_dist_sizes.py dist --expect 15
+          cat DIST_SIZES.md >> "$GITHUB_STEP_SUMMARY"
+          : > SHA256SUMS
+          while IFS= read -r -d '' file; do
+            hash=$(sha256sum "$file" | cut -d' ' -f1)
+            printf '%s  %s\n' "$hash" "$(basename "$file")" >> SHA256SUMS
+          done < <(find dist -type f -print0 | sort -z)
+          version=$(sed -n 's/^project(pigzpp VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)
+          total_size=$(python3 -c 'import json; print(json.load(open("dist-sizes.json"))["total_size_bytes"])')
+          printf '{"version":"%s","wheels":%s,"native_archives":%s,"wasm_archives":%s,"total_size_bytes":%s}\n' \
+            "$version" "$wheel_count" "$native_count" "$wasm_count" "$total_size" > manifest.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest
+          path: |
+            SHA256SUMS
+            manifest.json
+            DIST_SIZES.md
+            dist-sizes.json
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: manifest
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/**/*

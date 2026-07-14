@@ -6,7 +6,7 @@
 #include "decompress.h"
 #include "crc.h"
 #include "format.h"
-#include "io.h"
+#include "io_utils.h"
 
 #include <atomic>
 #include <algorithm>
@@ -21,7 +21,6 @@
 #include <thread>
 #include <vector>
 
-#include <unistd.h>
 #include <zlib.h>
 
 #ifdef PIGZPP_USE_ISAL

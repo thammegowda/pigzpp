@@ -20,7 +20,7 @@ fi
 
 echo ""
 echo "==> Installing Python packages..."
-pip install --quiet pytest pybind11 2>/dev/null || \
+pip install --quiet pytest nanobind scikit-build-core 2>/dev/null || \
     echo "Warning: some Python packages failed to install"
 
 echo ""

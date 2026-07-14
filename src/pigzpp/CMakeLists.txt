@@ -26,13 +26,14 @@ if(MATH_LIBRARY)
 endif()
 
 target_compile_options(pigzpp_lib PRIVATE
-    -Wall -Wextra -Wpedantic -Wcast-qual
-    $<$<CONFIG:Release>:-O3 -DNDEBUG -funroll-loops -fomit-frame-pointer
-        -falign-functions=32 -falign-loops=32>
-    $<$<CONFIG:Debug>:-g -fsanitize=address,undefined>
+    $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic;-Wcast-qual>
+    $<$<AND:$<CONFIG:Release>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>>:-O3;-DNDEBUG;-funroll-loops;-fomit-frame-pointer;-falign-functions=32;-falign-loops=32>
+    $<$<AND:$<CONFIG:Debug>,$<CXX_COMPILER_ID:GNU,Clang>>:-g;-fsanitize=address,undefined>
+    $<$<CXX_COMPILER_ID:MSVC>:/W4;/permissive->
+    $<$<AND:$<CONFIG:Release>,$<CXX_COMPILER_ID:MSVC>>:/O2;/DNDEBUG>
 )
 target_link_options(pigzpp_lib PUBLIC
-    $<$<CONFIG:Debug>:-fsanitize=address,undefined>
+    $<$<AND:$<CONFIG:Debug>,$<CXX_COMPILER_ID:GNU,Clang>>:-fsanitize=address,undefined>
 )
 
 # CLI executable (native only — the WASM build ships the Embind module instead).
@@ -43,17 +44,26 @@ set_target_properties(pigzpp_exe PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
 target_link_libraries(pigzpp_exe PRIVATE pigzpp_lib)
+target_compile_definitions(pigzpp_exe PRIVATE PIGZPP_VERSION="${PROJECT_VERSION}")
 
 target_compile_options(pigzpp_exe PRIVATE
-    -Wall -Wextra -Wpedantic
-    $<$<CONFIG:Release>:-O3 -DNDEBUG -funroll-loops -fomit-frame-pointer
-        -falign-functions=32 -falign-loops=32>
-    $<$<CONFIG:Debug>:-g -fsanitize=address,undefined>
+    $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic>
+    $<$<AND:$<CONFIG:Release>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>>:-O3;-DNDEBUG;-funroll-loops;-fomit-frame-pointer;-falign-functions=32;-falign-loops=32>
+    $<$<AND:$<CONFIG:Debug>,$<CXX_COMPILER_ID:GNU,Clang>>:-g;-fsanitize=address,undefined>
+    $<$<CXX_COMPILER_ID:MSVC>:/W4;/permissive->
+    $<$<AND:$<CONFIG:Release>,$<CXX_COMPILER_ID:MSVC>>:/O2;/DNDEBUG>
 )
 
-if(PIGZPP_STATIC AND CMAKE_BUILD_TYPE STREQUAL "Release")
+if(PIGZPP_STATIC AND CMAKE_BUILD_TYPE STREQUAL "Release" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_options(pigzpp_exe PRIVATE -static -static-libgcc -static-libstdc++)
     message(STATUS "Static linking enabled for pigzpp executable")
+elseif(PIGZPP_STATIC AND MSVC)
+    set_property(TARGET pigzpp_exe PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    message(STATUS "Static MSVC runtime enabled for pigzpp executable")
+endif()
+if(NOT SKBUILD)
+    install(TARGETS pigzpp_exe RUNTIME DESTINATION bin)
 endif()
 endif()
 
@@ -71,8 +81,10 @@ if(PIGZPP_BUILD_CAPI AND NOT EMSCRIPTEN)
     target_include_directories(pigzppc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(pigzppc PRIVATE pigzpp_lib)
     target_compile_options(pigzppc PRIVATE
-        -Wall -Wextra
-        $<$<CONFIG:Release>:-O3 -DNDEBUG>
+        $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra>
+        $<$<AND:$<CONFIG:Release>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>>:-O3;-DNDEBUG>
+        $<$<CXX_COMPILER_ID:MSVC>:/W4;/permissive->
+        $<$<AND:$<CONFIG:Release>,$<CXX_COMPILER_ID:MSVC>>:/O2;/DNDEBUG>
     )
     message(STATUS "Building shared C-ABI library libpigzppc")
 endif()

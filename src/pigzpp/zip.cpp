@@ -4,20 +4,17 @@
 
 #include "compress.h"
 #include "format.h"
-#include "io.h"
+#include "io_utils.h"
+#include "platform.h"
 
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <ctime>
+#include <filesystem>
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
-
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <unistd.h>
 
 #include <zlib.h>
 
@@ -166,22 +163,10 @@ std::string safe_join(const std::string& dest_dir, const std::string& arcname) {
 
 void make_dirs(const std::string& path) {
     if (path.empty()) return;
-    std::string cur;
-    size_t i = 0;
-    if (path[0] == '/') { cur = "/"; i = 1; }
-    while (i <= path.size()) {
-        size_t slash = path.find('/', i);
-        std::string comp = path.substr(i, slash == std::string::npos ? std::string::npos
-                                                                     : slash - i);
-        if (!comp.empty()) {
-            if (!cur.empty() && cur.back() != '/') cur += '/';
-            cur += comp;
-            if (::mkdir(cur.c_str(), 0777) != 0 && errno != EEXIST)
-                throw std::runtime_error("zip: mkdir '" + cur + "' failed: " + std::strerror(errno));
-        }
-        if (slash == std::string::npos) break;
-        i = slash + 1;
-    }
+    std::error_code error;
+    std::filesystem::create_directories(path, error);
+    if (error)
+        throw std::runtime_error("zip: mkdir '" + path + "' failed: " + error.message());
 }
 
 // ---- Output sink (fd or growable buffer) ----------------------------------
@@ -207,8 +192,8 @@ struct Source {
 
     uint64_t size() const {
         if (buf) return buf->size();
-        struct stat st{};
-        if (::fstat(fd, &st) != 0)
+        platform::FileStat st{};
+        if (platform::fstat(fd, &st) != 0)
             throw std::runtime_error("zip: fstat failed: " + std::string(std::strerror(errno)));
         return static_cast<uint64_t>(st.st_size);
     }
@@ -223,7 +208,7 @@ struct Source {
         }
         size_t got = 0;
         while (got < len) {
-            ssize_t r = ::pread(fd, out.data() + got, len - got, static_cast<off_t>(off + got));
+            std::ptrdiff_t r = platform::pread(fd, out.data() + got, len - got, off + got);
             if (r < 0) {
                 if (errno == EINTR) continue;
                 throw std::runtime_error("zip: pread failed: " + std::string(std::strerror(errno)));
@@ -267,8 +252,8 @@ Archive parse_archive(const Source& src) {
     // Locate the End Of Central Directory record by scanning the tail.
     const uint64_t max_tail = std::min<uint64_t>(total, 22 + 0xFFFF);
     std::vector<uint8_t> tail = src.read_at(total - max_tail, static_cast<size_t>(max_tail));
-    ssize_t eocd = -1;
-    for (ssize_t i = static_cast<ssize_t>(tail.size()) - 22; i >= 0; --i) {
+    std::ptrdiff_t eocd = -1;
+    for (std::ptrdiff_t i = static_cast<std::ptrdiff_t>(tail.size()) - 22; i >= 0; --i) {
         if (get_le(tail.data() + i, 4) == SIG_EOCD) { eocd = i; break; }
     }
     if (eocd < 0) throw std::runtime_error("zip: end-of-central-directory not found");
@@ -280,7 +265,7 @@ Archive parse_archive(const Source& src) {
     uint16_t comment_len = static_cast<uint16_t>(get_le(e + 20, 2));
 
     Archive arc;
-    if (comment_len > 0 && eocd + 22 + comment_len <= static_cast<ssize_t>(tail.size()))
+    if (comment_len > 0 && eocd + 22 + comment_len <= static_cast<std::ptrdiff_t>(tail.size()))
         arc.comment.assign(reinterpret_cast<const char*>(e + 22), comment_len);
 
     // Zip64: resolve real values via the Zip64 EOCD locator if present.
@@ -517,7 +502,7 @@ struct ZipWriter::Impl {
         finished = true;
         std::vector<uint8_t> result;
         if (in_memory) result.swap(membuf);
-        if (owned_fd >= 0) { ::close(owned_fd); owned_fd = -1; }
+        if (owned_fd >= 0) { platform::close(owned_fd); owned_fd = -1; }
         return result;
     }
 };
@@ -529,19 +514,19 @@ ZipWriter::ZipWriter() : p_(std::make_unique<Impl>()) {
 
 ZipWriter::ZipWriter(const std::string& path, char mode) : p_(std::make_unique<Impl>()) {
     if (mode == 'a') {
-        int fd = ::open(path.c_str(), O_RDWR);
+        int fd = platform::open(path.c_str(), O_RDWR);
         if (fd < 0)
             throw std::runtime_error("zip: cannot open '" + path + "' for append: "
                                      + std::strerror(errno));
         Source src;
         src.fd = fd;
         Archive arc = parse_archive(src);   // may throw on a corrupt/short file
-        if (::ftruncate(fd, static_cast<off_t>(arc.cd_offset)) != 0) {
-            ::close(fd);
+        if (platform::truncate(fd, static_cast<int64_t>(arc.cd_offset)) != 0) {
+            platform::close(fd);
             throw std::runtime_error("zip: ftruncate failed: " + std::string(std::strerror(errno)));
         }
-        if (::lseek(fd, static_cast<off_t>(arc.cd_offset), SEEK_SET) < 0) {
-            ::close(fd);
+        if (platform::seek(fd, static_cast<int64_t>(arc.cd_offset), SEEK_SET) < 0) {
+            platform::close(fd);
             throw std::runtime_error("zip: lseek failed: " + std::string(std::strerror(errno)));
         }
         p_->owned_fd = fd;
@@ -550,7 +535,7 @@ ZipWriter::ZipWriter(const std::string& path, char mode) : p_(std::make_unique<I
         p_->entries = std::move(arc.entries);
         p_->comment = std::move(arc.comment);
     } else {
-        int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        int fd = platform::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (fd < 0)
             throw std::runtime_error("zip: cannot create '" + path + "': "
                                      + std::strerror(errno));
@@ -564,7 +549,7 @@ ZipWriter::~ZipWriter() {
         // Best-effort finalize so a dropped file writer still yields a valid archive.
         try { p_->write_central(); } catch (...) {}
     }
-    if (p_ && p_->owned_fd >= 0) ::close(p_->owned_fd);
+    if (p_ && p_->owned_fd >= 0) platform::close(p_->owned_fd);
 }
 
 void ZipWriter::write_bytes(const std::string& name, const uint8_t* data, size_t size,
@@ -579,17 +564,17 @@ void ZipWriter::write_str(const std::string& name, const std::string& data,
 
 void ZipWriter::write_file(const std::string& path, const std::string& arcname,
                            const WriteOptions& opts) {
-    int fd = ::open(path.c_str(), O_RDONLY);
+    int fd = platform::open(path.c_str(), O_RDONLY);
     if (fd < 0)
         throw std::runtime_error("zip: cannot open '" + path + "': " + std::strerror(errno));
-    struct stat st{};
-    if (::fstat(fd, &st) != 0) {
-        ::close(fd);
+    platform::FileStat st{};
+    if (platform::fstat(fd, &st) != 0) {
+        platform::close(fd);
         throw std::runtime_error("zip: fstat '" + path + "' failed");
     }
     std::vector<uint8_t> buf(static_cast<size_t>(st.st_size));
     size_t got = readn(fd, buf.data(), buf.size());
-    ::close(fd);
+    platform::close(fd);
     buf.resize(got);
 
     WriteOptions o = opts;
@@ -647,7 +632,7 @@ struct ZipReader::Impl {
 };
 
 ZipReader::ZipReader(const std::string& path) : p_(std::make_unique<Impl>()) {
-    int fd = ::open(path.c_str(), O_RDONLY);
+    int fd = platform::open(path.c_str(), O_RDONLY);
     if (fd < 0)
         throw std::runtime_error("zip: cannot open '" + path + "': " + std::strerror(errno));
     p_->owned_fd = fd;
@@ -664,7 +649,7 @@ ZipReader::ZipReader(std::vector<uint8_t> data) : p_(std::make_unique<Impl>()) {
 }
 
 ZipReader::~ZipReader() {
-    if (p_ && p_->owned_fd >= 0) ::close(p_->owned_fd);
+    if (p_ && p_->owned_fd >= 0) platform::close(p_->owned_fd);
 }
 
 const std::vector<EntryInfo>& ZipReader::entries() const { return p_->arc.entries; }
@@ -725,11 +710,11 @@ std::string ZipReader::extract(const std::string& name, const std::string& dest_
     if (slash != std::string::npos) make_dirs(target.substr(0, slash));
 
     std::vector<uint8_t> data = p_->read_entry(e);
-    int fd = ::open(target.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int fd = platform::open(target.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0)
         throw std::runtime_error("zip: cannot write '" + target + "': " + std::strerror(errno));
     if (!data.empty()) writen(fd, data.data(), data.size());
-    ::close(fd);
+    platform::close(fd);
     return target;
 }
 

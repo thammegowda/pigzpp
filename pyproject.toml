@@ -1,25 +1,51 @@
 [build-system]
-requires = ["scikit-build-core>=0.5", "pybind11>=2.11"]
+requires = ["scikit-build-core>=0.11", "nanobind>=2.12"]
 build-backend = "scikit_build_core.build"
 
 [project]
 name = "pigzpp"
-version = "1.0.0"
+version = "1.1.0"
 description = "Fast gzip/zlib compression and PNG encode/decode helpers (C++23 with Python bindings)"
-requires-python = ">=3.8"
+readme = "README.md"
+requires-python = ">=3.12"
 dependencies = ["numpy>=1.21"]
-license = {text = "Zlib"}
+license = "Zlib"
+
+[project.urls]
+Homepage = "https://github.com/thammegowda/pigzpp"
+Repository = "https://github.com/thammegowda/pigzpp"
 
 [tool.scikit-build]
+minimum-version = "build-system.requires"
 cmake.build-type = "Release"
 cmake.args = [
     "-DPIGZPP_BUILD_TESTS=OFF",
     "-DPIGZPP_BUILD_BENCHMARKS=OFF",
     "-DPIGZPP_BUILD_PYTHON=ON",
     "-DPIGZPP_STATIC=OFF",
+    "-DPIGZPP_DISTRIBUTION_BUILD=ON",
 ]
 wheel.packages = []  # no pure-Python packages; the .so is installed directly
+wheel.py-api = "cp312"
 
-[[tool.scikit-build.overrides]]
-if.platform-system = "linux"
-cmake.args = ["-DPIGZPP_USE_ZLIB_NG=ON"]
+[tool.cibuildwheel]
+build = "cp312-*"
+skip = ["*-musllinux_*", "*-win32", "*-manylinux_i686"]
+build-verbosity = 1
+test-requires = ["pytest", "numpy", "pillow"]
+test-command = "python -m pytest {project}/tests/test_python.py {project}/tests/test_zip.py {project}/tests/test_png.py -v"
+
+[tool.cibuildwheel.linux]
+archs = ["native"]
+before-all = "dnf install -y nasm"
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
+
+[tool.cibuildwheel.macos]
+archs = ["native"]
+
+[tool.cibuildwheel.macos.environment]
+MACOSX_DEPLOYMENT_TARGET = "11.0"
+
+[tool.cibuildwheel.windows]
+archs = ["native"]

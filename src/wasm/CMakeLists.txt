@@ -2,6 +2,7 @@
 
 add_executable(pigzpp_wasm pigzpp_wasm.cpp)
 target_link_libraries(pigzpp_wasm PRIVATE pigzpp_lib)
+target_compile_definitions(pigzpp_wasm PRIVATE PIGZPP_VERSION="${PROJECT_VERSION}")
 
 target_compile_options(pigzpp_wasm PRIVATE
     -Wall -Wextra

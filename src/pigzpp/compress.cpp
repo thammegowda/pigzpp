@@ -7,7 +7,7 @@
 
 #include "compress.h"
 #include "format.h"
-#include "io.h"
+#include "io_utils.h"
 
 #include <algorithm>
 #include <atomic>
@@ -20,7 +20,6 @@
 #include <mutex>
 #include <stdexcept>
 #include <thread>
-#include <unistd.h>
 #include <vector>
 
 #include <zlib.h>

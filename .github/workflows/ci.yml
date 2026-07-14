@@ -34,7 +34,7 @@ jobs:
       - name: Run C++ tests
         run: ctest --test-dir build --output-on-failure
 
-  # Python bindings (pybind11) built via scikit-build-core, then pytest.
+  # Python bindings (nanobind ABI3) built via scikit-build-core, then pytest.
   python:
     name: Python bindings
     runs-on: ubuntu-24.04
@@ -118,7 +118,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - name: Build WASM module (SIMD)
-        run: scripts/build_wasm.sh simd
-      - name: Run WASM smoke test
-        run: node tests/test_wasm.mjs
+      - name: Build all WASM variants
+        run: scripts/build_wasm.sh all
+      - name: Run WASM smoke tests
+        run: |
+          node tests/test_wasm.mjs build-wasm-baseline/wasm/pigzpp_wasm.mjs
+          node tests/test_wasm.mjs build-wasm-simd/wasm/pigzpp_wasm.mjs
+          node tests/test_wasm.mjs build-wasm-threads/wasm/pigzpp_wasm.mjs

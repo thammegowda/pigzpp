@@ -27,7 +27,7 @@ pigz is one of those essential tools — if you've ever compressed GBs to TBs of
 - **Faster** — [zlib-ng](https://github.com/zlib-ng/zlib-ng) (SIMD) and [ISA-L](https://github.com/intel/isa-l) (hand-tuned assembly) DEFLATE backends, parallelized across cores
 - **Selectable backend** — `auto` (ISA-L, fastest), `zlib` (zlib-ng, best ratio), or `isal`, via API and the `--engine` CLI flag
 - **Thread-safe library** — no global state, run many compress/decompress operations in one process
-- **Bindings for many languages** — Python (pybind11), C++, WebAssembly (Embind), Go (cgo), and Rust (FFI), all sharing one accelerated core
+- **Bindings for many languages** — Python (nanobind), C++, WebAssembly (Embind), Go (cgo), and Rust (FFI), all sharing one accelerated core
 - **ZIP archives** — native multi-entry ZIP (STORED + DEFLATE, Zip64) with a `zipfile`-like Python API, interoperable with `zipfile`/`unzip`
 - **PNG helpers** — encode/decode grayscale, grayscale+alpha, RGB, and RGBA image buffers
 - **Fully compatible** — compress with pigzpp, decompress with gzip/pigz, and vice versa
@@ -138,9 +138,25 @@ Even single-threaded, pigzpp-wasm creates archives ~3–5× faster and reads the
 
 Benchmarks live under `benchmarks/` (`core`, `python`, `png`, `go-docker`, `rust`, `wasm`), all reading the shared corpus in `build/bench_data/`. See [notes/05-summary.md](notes/05-summary.md) for the earlier large-core CLI runs (48-core Xeon) and thread-scaling detail.
 
+## Prebuilt releases
+
+Tagged releases publish artifacts to [GitHub Releases](https://github.com/thammegowda/pigzpp/releases):
+
+- One `cp312-abi3` Python wheel for each of Linux, macOS, and Windows on x86_64 and ARM64. Each wheel works with regular CPython 3.12 and newer on that same OS and architecture.
+- A native `pigzpp` CLI archive for each of those six OS/architecture targets.
+- WebAssembly archives for `baseline`, `simd`, and `threads` variants.
+
+The stable ABI removes the need for separate wheels for CPython 3.12, 3.13, 3.14, and later releases. Free-threaded CPython uses a different ABI and is not currently included. Linux wheels target manylinux/glibc; Alpine/musl wheels are not currently produced.
+
+ISA-L is enabled where its assembly implementation is supported (Linux x86_64/ARM64 and Windows x86_64). macOS and Windows ARM64 artifacts use zlib-ng, which still provides runtime SIMD acceleration. Releases are attached to GitHub only; they are not automatically published to PyPI or npm.
+
+All release artifacts embed zlib-ng, ISA-L (when enabled), Zopfli, and nanobind statically; they never require those libraries to be installed at runtime. Linux CLI archives are fully static. Windows CLI archives and wheels use the static MSVC runtime. Linux wheels also embed the GNU C++ and GCC runtimes. Python itself and operating-system libraries remain dynamic by design; macOS does not support fully static executables and uses the system `libc++`/`libSystem` supplied by every supported macOS release. CI inspects each final archive and repaired wheel and rejects dynamic zlib-ng or ISA-L dependencies.
+
+Every release includes `DIST_SIZES.md` and `dist-sizes.json`, reporting the exact byte size and human-readable binary size of all six native archives, six wheels, and three WebAssembly packages, together with per-category and overall totals. The same table is written to the distribution workflow summary.
+
 ## Build
 
-Requires CMake 3.20+, a C++23 compiler (GCC 13+ or Clang 17+), and Python 3.10+ (for the Python module). The optional bindings each need their own toolchain: **Emscripten** (WebAssembly), **Go 1.22+** (cgo), or **Rust 1.75+** (FFI) — see [Building the language bindings](#building-the-language-bindings).
+Requires CMake 3.20+, a C++23 compiler (GCC 13+, Clang 17+, or a recent MSVC), and Python 3.12+ (for the Python module). The optional bindings each need their own toolchain: **Emscripten** (WebAssembly), **Go 1.22+** (cgo), or **Rust 1.75+** (FFI) — see [Building the language bindings](#building-the-language-bindings).
 
 ```bash
 git clone --recursive https://github.com/thammegowda/pigzpp.git
@@ -155,7 +171,7 @@ git submodule update --init --recursive
 
 This produces:
 - `build/pigzpp` — CLI binary (drop-in replacement for pigz)
-- `build/pigzpp.cpython-*.so` — Python module
+- `build/pigzpp.abi3.so` — Python module for regular CPython 3.12+
 
 Other useful targets:
 
@@ -173,7 +189,7 @@ make clean          # Remove build artifacts
 
 `make build` produces the CLI (and a Python module you can import from `build/` via `PYTHONPATH`). To install the Python package properly, or to build the WebAssembly / C-ABI surfaces, use the steps below.
 
-**Python** (pybind11) — install the `pigzpp` module into the active environment:
+**Python** (nanobind, CPython stable ABI) — install the `pigzpp` module into a regular CPython 3.12+ environment:
 
 ```bash
 pip install .
@@ -390,16 +406,16 @@ pigzpp/
 │   ├── crc.h/cpp         CRC-32/Adler-32 with optimized combine
 │   ├── pool.h/cpp        Thread-safe buffer pool (RAII)
 │   ├── format.h/cpp      Gzip/zlib header/trailer parsing
-│   ├── io.h/cpp          Buffered I/O with EINTR retry
+│   ├── io_utils.h/io.cpp Buffered I/O with EINTR retry
 │   ├── capi.h/cpp        C ABI (libpigzppc) for FFI bindings
 │   └── main.cpp          CLI entry point
-├── src/python/           pybind11 bindings
+├── src/python/           nanobind stable-ABI bindings
 ├── src/go/               Go binding (cgo → libpigzppc)
 ├── src/rust/             Rust binding (FFI → libpigzppc)
 ├── src/wasm/             WebAssembly binding (Embind)
 ├── tests/                GoogleTest + pytest
 ├── benchmarks/           core, python, png, go-docker, rust, wasm suites
-├── third_party/          zlib-ng, ISA-L, pybind11, zopfli
+├── third_party/          zlib-ng, ISA-L, zopfli
 └── notes/                Development notes and blog post
 ```
 
@@ -417,7 +433,7 @@ pigzpp uses the same [zlib license](LICENSE) as the original pigz.
 
 - [zlib-ng](https://github.com/zlib-ng/zlib-ng) — SIMD-optimized zlib replacement (zlib license)
 - [ISA-L](https://github.com/intel/isa-l) — accelerated DEFLATE/Adler-32 for supported builds (BSD license)
-- [pybind11](https://github.com/pybind/pybind11) — C++/Python bindings (BSD license)
+- [nanobind](https://github.com/wjakob/nanobind) — C++/Python bindings (BSD license)
 - [zopfli](https://github.com/google/zopfli) — optimal DEFLATE compressor for level 11 (Apache 2.0)
 - [GoogleTest](https://github.com/google/googletest) — testing framework (BSD license)
 

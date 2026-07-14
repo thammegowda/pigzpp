@@ -43,7 +43,7 @@ build:
 	fi
 	cmake --build $(BUILD_DIR) -j$(NPROC)
 	@echo "\n✓ Release build complete: $(PIGZPP_BIN)"
-	@ls -lh $(PIGZPP_BIN) $(BUILD_DIR)/pigzpp.cpython-*.so 2>/dev/null || true
+	@ls -lh $(PIGZPP_BIN) $(BUILD_DIR)/pigzpp.abi3.* 2>/dev/null || true
 
 debug:
 	@mkdir -p $(DEBUG_DIR)
@@ -67,7 +67,7 @@ test-cpp: build
 	cd $(BUILD_DIR) && ctest --output-on-failure -j$(NPROC)
 
 test-py: build
-	PYTHONPATH=$(CURDIR)/$(BUILD_DIR) python -m pytest tests/test_python.py tests/test_png.py -v
+	PYTHONPATH=$(CURDIR)/$(BUILD_DIR) python -m pytest tests/test_python.py tests/test_zip.py tests/test_png.py -v
 
 # ─── Benchmarks ───────────────────────────────────────────────────────────────
 
