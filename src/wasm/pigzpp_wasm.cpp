@@ -15,6 +15,7 @@
 #include "compress.h"
 #include "decompress.h"
 #include "png.h"
+#include "zip.h"
 
 namespace {
 
@@ -127,6 +128,90 @@ bool threads_enabled() {
 #endif
 }
 
+// ---- ZIP archives ----
+
+// Number of worker threads for a member's DEFLATE step. Non-threaded builds
+// must stay single-threaded regardless of the requested count.
+int zip_threads(int threads) {
+#ifdef PIGZPP_WASM_THREADS_ENABLED
+    return threads;
+#else
+    (void)threads;
+    return 1;
+#endif
+}
+
+// In-memory ZIP writer exposed to JS. Add members, then call finish() to get
+// the archive as a Uint8Array.
+class WasmZipWriter {
+public:
+    // Add a member. `method` is 0 (store) or 8 (deflate). `data` is a Uint8Array.
+    void add(const std::string& name, const val& data, int method, int level,
+             int threads) {
+        std::vector<uint8_t> bytes = to_vec(data);
+        pigzpp::zip::WriteOptions opts;
+        opts.method = static_cast<pigzpp::zip::Method>(method);
+        opts.level = level;
+        opts.threads = zip_threads(threads);
+        writer_.write_bytes(name, bytes.data(), bytes.size(), opts);
+    }
+
+    void setComment(const std::string& comment) { writer_.set_comment(comment); }
+
+    // Finalize and return the archive bytes.
+    val finish() {
+        std::vector<uint8_t> archive = writer_.finish();
+        return to_u8(archive);
+    }
+
+private:
+    pigzpp::zip::ZipWriter writer_;
+};
+
+// In-memory ZIP reader exposed to JS.
+class WasmZipReader {
+public:
+    explicit WasmZipReader(const val& data) : reader_(to_vec(data)) {}
+
+    // List of member names.
+    val names() const {
+        val arr = val::array();
+        int i = 0;
+        for (const auto& n : reader_.namelist()) arr.set(i++, n);
+        return arr;
+    }
+
+    // Member metadata: { name, size, compressedSize, crc32, method, isDir }.
+    val infolist() const {
+        val arr = val::array();
+        int i = 0;
+        for (const auto& e : reader_.entries()) {
+            val o = val::object();
+            o.set("name", e.name);
+            o.set("size", static_cast<double>(e.uncompressed_size));
+            o.set("compressedSize", static_cast<double>(e.compressed_size));
+            o.set("crc32", static_cast<double>(e.crc32));
+            o.set("method", static_cast<int>(e.method));
+            o.set("isDir", e.is_dir);
+            arr.set(i++, o);
+        }
+        return arr;
+    }
+
+    // Read + decompress a member by name.
+    val read(const std::string& name) const {
+        return to_u8(reader_.read(name));
+    }
+
+    // Name of the first corrupt member, or "" if the archive is intact.
+    std::string testzip() const { return reader_.testzip(); }
+
+    std::string comment() const { return reader_.comment(); }
+
+private:
+    pigzpp::zip::ZipReader reader_;
+};
+
 } // namespace
 
 EMSCRIPTEN_BINDINGS(pigzpp) {
@@ -136,4 +221,18 @@ EMSCRIPTEN_BINDINGS(pigzpp) {
     emscripten::function("gzipDecompress", &gzip_decompress);
     emscripten::function("pngEncode", &png_encode);
     emscripten::function("pngDecode", &png_decode);
+
+    emscripten::class_<WasmZipWriter>("ZipWriter")
+        .constructor<>()
+        .function("add", &WasmZipWriter::add)
+        .function("setComment", &WasmZipWriter::setComment)
+        .function("finish", &WasmZipWriter::finish);
+
+    emscripten::class_<WasmZipReader>("ZipReader")
+        .constructor<val>()
+        .function("names", &WasmZipReader::names)
+        .function("infolist", &WasmZipReader::infolist)
+        .function("read", &WasmZipReader::read)
+        .function("testzip", &WasmZipReader::testzip)
+        .function("comment", &WasmZipReader::comment);
 }
