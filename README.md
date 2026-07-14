@@ -15,7 +15,7 @@ pigz is one of those essential tools — if you've ever compressed GBs to TBs of
 - **Selectable backend** — `auto` (ISA-L, fastest), `zlib` (zlib-ng, best ratio), or `isal`, via API and the `--engine` CLI flag
 - **Modern C++23** — `std::jthread`, exceptions, RAII, no `setjmp`/`longjmp`
 - **Bindings for many languages** — Python (pybind11), Go (cgo), Rust (FFI), and WebAssembly (Embind), all sharing one accelerated core
-- **ZIP archives** — native multi-entry ZIP (STORED + DEFLATE, Zip64) with a `zipfile`-like Python API, interoperable with `zipfile`/`unzip`/`archive/zip`
+- **ZIP archives** — native multi-entry ZIP (STORED + DEFLATE, Zip64) with a `zipfile`-like Python API, interoperable with `zipfile`/`unzip`
 - **PNG helpers** — encode/decode grayscale, grayscale+alpha, RGB, and RGBA image buffers
 - **Fully compatible** — compress with pigzpp, decompress with gzip/pigz, and vice versa
 
@@ -201,7 +201,7 @@ Build the module with `scripts/build_wasm.sh` (Emscripten). The WASM build uses 
 pigzpp has a native, multi-entry ZIP container (STORED + DEFLATE, Zip64 for large
 entries/archives) that reuses the parallel compressor per member. The Python API
 mirrors a subset of the standard library's `zipfile`, and archives interoperate
-with `zipfile`, Go's `archive/zip`, `unzip`, and other standard tools.
+with `zipfile`, `unzip`, and other standard tools.
 
 ```python
 import pigzpp
@@ -223,33 +223,15 @@ with pigzpp.ZipFile("out.zip") as z:          # mode "r" (also "a" to append, "x
         print(info.filename, info.file_size, info.compress_size, info.compress_type)
 ```
 
-The same archive type is available from every surface:
+The archive type is also available from C++ ([`pigzpp/zip.h`](src/pigzpp/zip.h)) and WebAssembly:
 
 ```cpp
-// C++: pigzpp/zip.h
+// C++
 pigzpp::zip::ZipWriter w("out.zip");
 w.write_str("a.txt", "hello");
 w.close();
 pigzpp::zip::ZipReader r("out.zip");
 auto bytes = r.read("a.txt");
-```
-
-```go
-// Go
-w, _ := pigzpp.NewZipWriter()
-w.Add("a.txt", []byte("hello"), pigzpp.DefaultAddOptions())
-archive, _ := w.Finish()
-r, _ := pigzpp.OpenZip(archive); defer r.Close()
-data, _ := r.Read("a.txt")
-```
-
-```rust
-// Rust
-let mut w = pigzpp::ZipWriter::new()?;
-w.add("a.txt", b"hello", pigzpp::AddOptions::default())?;
-let archive = w.finish()?;
-let r = pigzpp::ZipReader::open(&archive)?;
-let data = r.read("a.txt")?;
 ```
 
 ```js
