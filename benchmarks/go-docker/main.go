@@ -245,6 +245,16 @@ func methodFor(name string, level, threads int, pigzbin string) (compressFunc, b
 		return func(src []byte) ([]byte, error) {
 			return pigzpp.Compress(src, level, threads)
 		}, true
+
+	case "pigzppcgo-isal": // force the ISA-L backend
+		return func(src []byte) ([]byte, error) {
+			return pigzpp.CompressEngine(src, level, threads, pigzpp.EngineIsal)
+		}, true
+
+	case "pigzppcgo-zlib": // force the zlib-ng backend
+		return func(src []byte) ([]byte, error) {
+			return pigzpp.CompressEngine(src, level, threads, pigzpp.EngineZlib)
+		}, true
 	}
 	return nil, false
 }

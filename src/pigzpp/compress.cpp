@@ -43,15 +43,17 @@ static constexpr unsigned MAXP2 = UINT_MAX - (UINT_MAX >> 1);
 #ifdef PIGZPP_USE_ISAL
 
 // Map pigzpp compression level (0-9) to ISA-L level (0-3).
+// ISA-L only exposes 4 levels; higher pigzpp levels favor ratio, so the common
+// default (6) and above map to ISA-L 3 (its best-ratio level).
 static int isal_level(int level) {
     if (level <= 0) return 0;
-    if (level <= 1) return 0;
-    if (level <= 5) return 1;
-    if (level <= 8) return 2;
-    return 3;  // level 9
+    if (level <= 2) return 1;
+    if (level <= 4) return 2;
+    return 3;  // 5-9: best ISA-L ratio
 }
 
-// Get the recommended level_buf size for an ISA-L level.
+// Get the recommended level_buf size for an ISA-L level. DEFAULT already aliases
+// the LARGE history buffer; EXTRA_LARGE gave no measurable ratio gain here.
 static size_t isal_level_buf_size(int isal_lvl) {
     switch (isal_lvl) {
     case 0: return ISAL_DEF_LVL0_DEFAULT;
@@ -62,8 +64,11 @@ static size_t isal_level_buf_size(int isal_lvl) {
     }
 }
 
-// Returns true when ISA-L should handle this compression (levels 0-9, not zopfli).
-static bool use_isal(int level) {
+// Returns true when ISA-L should handle this compression: the engine allows it
+// (Auto or Isal, not forced Zlib) and the level is in ISA-L's range (0-9, not
+// zopfli).
+static bool use_isal(int level, Engine engine) {
+    if (engine == Engine::Zlib) return false;
     return level <= 9;
 }
 
@@ -271,7 +276,7 @@ void Compressor::compress(int in_fd, int out_fd, MemIO* mem) {
         // ISA-L compresses at ~3-5 GB/s per core, so larger blocks amortize
         // per-block overhead (flush, dict set, reset).  But we need enough
         // blocks (>= 2 per thread) to keep all threads busy.
-        if (use_isal(lvl) && !cfg_.rsync && cfg_.block == DEFAULT_BLOCK_SIZE) {
+        if (use_isal(lvl, cfg_.engine) && !cfg_.rsync && cfg_.block == DEFAULT_BLOCK_SIZE) {
             off_t fsize = mem ? static_cast<off_t>(mem->in_size)
                               : lseek(in_fd, 0, SEEK_END);
             if (fsize > 0) {
@@ -404,7 +409,7 @@ void Compressor::single_compress(int in_fd, int out_fd) {
 
 #ifdef PIGZPP_USE_ISAL
     // ISA-L fast path: levels 0-9 without rsync (rsync needs deflatePending/deflatePrime).
-    if (use_isal(actual_level) && !cfg_.rsync) {
+    if (use_isal(actual_level, cfg_.engine) && !cfg_.rsync) {
         struct isal_zstream istrm;
         isal_deflate_init(&istrm);
         int ilvl = isal_level(actual_level);
@@ -726,7 +731,7 @@ void Compressor::parallel_compress(int in_fd, int out_fd, MemIO* mem) {
         // ISA-L path for levels 0-9.
         struct isal_zstream istrm;
         std::vector<uint8_t> isal_lvl_buf;
-        bool using_isal = use_isal(actual_level);
+        bool using_isal = use_isal(actual_level, cfg_.engine);
         if (using_isal) {
             int ilvl = isal_level(actual_level);
             size_t buf_sz = isal_level_buf_size(ilvl);

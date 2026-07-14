@@ -105,10 +105,10 @@ uint16_t zlib_header(int level) {
 }
 
 int isal_level(int level) {
-    if (level <= 1) return 0;
-    if (level <= 5) return 1;
-    if (level <= 8) return 2;
-    return 3;
+    if (level <= 0) return 0;
+    if (level <= 2) return 1;
+    if (level <= 4) return 2;
+    return 3;  // 5-9: best ISA-L ratio
 }
 
 size_t isal_level_buf_size(int isal_level_value) {

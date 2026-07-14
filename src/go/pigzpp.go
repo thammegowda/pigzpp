@@ -27,22 +27,42 @@ import (
 	"unsafe"
 )
 
-// Compress gzip-compresses src using pigzpp. level is 1-9 (or -1 for the
-// library default); threads <= 0 uses all available cores.
+// Engine selects the DEFLATE backend.
+type Engine int
+
+const (
+	EngineAuto Engine = iota // best available (ISA-L if built in, else zlib-ng)
+	EngineZlib               // force zlib-ng (higher ratio, slower)
+	EngineIsal               // force ISA-L (faster, lower ratio)
+)
+
+// Compress gzip-compresses src using pigzpp with the default (auto) backend.
+// level is 1-9 (or -1 for the library default); threads <= 0 uses all cores.
 func Compress(src []byte, level, threads int) ([]byte, error) {
-	return call(src, level, threads, true)
+	return CompressEngine(src, level, threads, EngineAuto)
 }
 
-// CompressOwned gzip-compresses src and returns a byte slice that ALIASES the
-// C-allocated output buffer with no copy, plus a release function that MUST be
-// called once the slice is no longer needed. This is the fully zero-copy
-// output path (no GoBytes copy). The slice must not be used after release.
+// CompressEngine is Compress with an explicit backend engine.
+func CompressEngine(src []byte, level, threads int, engine Engine) ([]byte, error) {
+	return call(src, level, threads, engine, true)
+}
+
+// CompressOwned gzip-compresses src (auto backend) and returns a byte slice
+// that ALIASES the C-allocated output buffer with no copy, plus a release
+// function that MUST be called once the slice is no longer needed. This is the
+// fully zero-copy output path (no GoBytes copy). The slice must not be used
+// after release.
 func CompressOwned(src []byte, level, threads int) (data []byte, release func(), err error) {
+	return CompressOwnedEngine(src, level, threads, EngineAuto)
+}
+
+// CompressOwnedEngine is CompressOwned with an explicit backend engine.
+func CompressOwnedEngine(src []byte, level, threads int, engine Engine) (data []byte, release func(), err error) {
 	var ptr *C.uint8_t
 	if len(src) > 0 {
 		ptr = (*C.uint8_t)(unsafe.Pointer(&src[0]))
 	}
-	buf := C.pigzpp_gzip_compress(ptr, C.size_t(len(src)), C.int(level), C.int(threads))
+	buf := C.pigzpp_gzip_compress(ptr, C.size_t(len(src)), C.int(level), C.int(threads), C.int(engine))
 	runtime.KeepAlive(src)
 
 	if buf.error != nil {
@@ -61,10 +81,10 @@ func CompressOwned(src []byte, level, threads int) (data []byte, release func(),
 // Decompress inflates a gzip/zlib stream produced by any standard tool.
 // threads <= 0 uses all available cores.
 func Decompress(src []byte, threads int) ([]byte, error) {
-	return call(src, 0, threads, false)
+	return call(src, 0, threads, EngineAuto, false)
 }
 
-func call(src []byte, level, threads int, compress bool) ([]byte, error) {
+func call(src []byte, level, threads int, engine Engine, compress bool) ([]byte, error) {
 	var ptr *C.uint8_t
 	if len(src) > 0 {
 		ptr = (*C.uint8_t)(unsafe.Pointer(&src[0]))
@@ -72,7 +92,7 @@ func call(src []byte, level, threads int, compress bool) ([]byte, error) {
 
 	var buf C.pigzpp_buffer
 	if compress {
-		buf = C.pigzpp_gzip_compress(ptr, C.size_t(len(src)), C.int(level), C.int(threads))
+		buf = C.pigzpp_gzip_compress(ptr, C.size_t(len(src)), C.int(level), C.int(threads), C.int(engine))
 	} else {
 		buf = C.pigzpp_gzip_decompress(ptr, C.size_t(len(src)), C.int(threads))
 	}

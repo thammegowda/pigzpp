@@ -19,10 +19,18 @@ typedef struct {
     const char* error; // NULL on success; static string on failure.
 } pigzpp_buffer;
 
+// DEFLATE backend engine selection.
+typedef enum {
+    PIGZPP_ENGINE_AUTO = 0, // best available (ISA-L if built in, else zlib-ng)
+    PIGZPP_ENGINE_ZLIB = 1, // force zlib-ng (higher ratio, slower)
+    PIGZPP_ENGINE_ISAL = 2, // force ISA-L (faster, lower ratio)
+} pigzpp_engine;
+
 // Compress `data` to gzip. `level` is 1-9 (or -1 for default); `threads` is
-// the number of compression threads (<= 0 means use all available cores).
+// the number of compression threads (<= 0 means use all available cores);
+// `engine` selects the DEFLATE backend (see pigzpp_engine).
 pigzpp_buffer pigzpp_gzip_compress(const uint8_t* data, size_t size,
-                                   int level, int threads);
+                                   int level, int threads, int engine);
 
 // Decompress a gzip/zlib stream. `threads` controls decompression workers
 // (<= 0 means use all available cores).

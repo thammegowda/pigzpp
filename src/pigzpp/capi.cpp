@@ -53,13 +53,14 @@ int resolve_threads(int threads) {
 extern "C" {
 
 pigzpp_buffer pigzpp_gzip_compress(const uint8_t* data, size_t size,
-                                   int level, int threads) {
+                                   int level, int threads, int engine) {
     try {
         pigzpp::Config cfg;
         cfg.form = pigzpp::Format::Gzip;
         cfg.mode = pigzpp::Mode::Compress;
         cfg.level = level;
         cfg.procs = resolve_threads(threads);
+        cfg.engine = static_cast<pigzpp::Engine>(engine);
         pigzpp::Compressor comp(cfg);
         // Zero-copy handoff: the pipeline writes directly into a malloc()'d
         // buffer we return, so there is no std::vector -> malloc copy here.
