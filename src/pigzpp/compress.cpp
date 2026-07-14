@@ -344,7 +344,8 @@ size_t Compressor::compress_buffer(const uint8_t* data, size_t size, uint8_t** o
         cfg_.procs <= 1 &&
         cfg_.level != 11 &&
         !cfg_.rsync &&
-        (cfg_.form == Format::Gzip || cfg_.form == Format::Zlib);
+        (cfg_.form == Format::Gzip || cfg_.form == Format::Zlib ||
+         cfg_.form == Format::Raw);
     std::vector<uint8_t> v =
         direct_ok
             ? direct_compress(data, size)
@@ -360,8 +361,10 @@ size_t Compressor::compress_buffer(const uint8_t* data, size_t size, uint8_t** o
 
 std::vector<uint8_t> Compressor::direct_compress(const uint8_t* data, size_t size) {
     z_stream zs{};
-    // Gzip = windowBits 15+16; zlib = 15. Strategy enum mirrors Z_* values.
-    const int window_bits = (cfg_.form == Format::Zlib) ? 15 : (15 + 16);
+    // Gzip = windowBits 15+16; zlib = 15; raw deflate = -15.
+    const int window_bits = (cfg_.form == Format::Zlib) ? 15
+                          : (cfg_.form == Format::Raw)  ? -15
+                          : (15 + 16);
     const int strategy = static_cast<int>(cfg_.strategy);
     if (deflateInit2(&zs, cfg_.level, Z_DEFLATED, window_bits, 8, strategy) != Z_OK)
         throw std::runtime_error("compress_buffer: deflateInit2 failed");

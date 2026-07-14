@@ -20,6 +20,7 @@ enum class Format : int {
     Gzip = 0,
     Zlib = 1,
     Zip = 2,
+    Raw = 3,   // Bare DEFLATE stream, no header/trailer (used for ZIP members).
 };
 
 // Operation mode.

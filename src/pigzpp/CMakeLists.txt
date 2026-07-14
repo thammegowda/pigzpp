@@ -7,6 +7,7 @@ set(PIGZPP_LIB_SOURCES
     compress.cpp
     decompress.cpp
     png.cpp
+    zip.cpp
 )
 
 add_library(pigzpp_lib STATIC ${PIGZPP_LIB_SOURCES})

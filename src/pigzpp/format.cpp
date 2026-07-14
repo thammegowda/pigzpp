@@ -65,6 +65,11 @@ size_t put_header(int fd, const Config& cfg) {
 std::vector<unsigned char> build_header(const Config& cfg) {
     std::vector<unsigned char> hdr;
 
+    if (cfg.form == Format::Raw) {
+        // Bare DEFLATE stream: no framing.
+        return hdr;
+    }
+
     if (cfg.form == Format::Zip) {
         const std::string& fname = cfg.name.empty() ? cfg.alias : cfg.name;
 
@@ -134,6 +139,10 @@ std::vector<unsigned char> build_trailer_simple(const Config& cfg,
                                                 uint64_t ulen,
                                                 unsigned long check) {
     std::vector<unsigned char> tlr;
+    if (cfg.form == Format::Raw) {
+        // Bare DEFLATE stream: no trailer.
+        return tlr;
+    }
     if (cfg.form == Format::Zlib) {
         // Big-endian Adler-32.
         put_be(tlr, check, 4);
@@ -148,6 +157,11 @@ void put_trailer(int fd, const Config& cfg,
                  uint64_t ulen, uint64_t clen,
                  unsigned long check, size_t head) {
     std::vector<unsigned char> tlr;
+
+    if (cfg.form == Format::Raw) {
+        // Bare DEFLATE stream: no trailer.
+        return;
+    }
 
     if (cfg.form == Format::Zip) {
         // Zip64 data descriptor
