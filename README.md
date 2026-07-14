@@ -1,23 +1,36 @@
 # pigzpp — Parallel gzip, rewritten in C++23
 
+**pigzpp is fast, parallel compression for your whole stack.** It's a drop-in replacement for `gzip`/`pigz` on the command line — *and* a proper library you can call from **Python, WebAssembly, C++, Go, and Rust**, with native **ZIP archives** and **PNG** encode/decode built on the same SIMD-accelerated ([zlib-ng](https://github.com/zlib-ng/zlib-ng)) and hand-tuned-assembly ([ISA-L](https://github.com/intel/isa-l)) DEFLATE core.
+
+### Highlights — at a glance
+
+Measured on an Intel Xeon W-2235 (128 MB text, level 6); see [Performance](#performance) for the full tables.
+
+| You want to… | pigzpp gives you |
+|---|---|
+| Compress on the **command line** | Up to **7× faster than `pigz`**, **45× faster than `gzip`** — or match `pigz`'s exact ratio and still be **2.4× faster** |
+| Compress from **Python** | Up to **80× faster than the standard-library `gzip`** — and the fastest option in Go, Rust, and JavaScript/WASM too |
+| Build/read **ZIP archives** | `pigzpp.ZipFile` (a `zipfile` drop-in) writes **13–31× faster than Python's `zipfile`**; in the browser it reads `.docx`/`.xlsx`/`.zip` faster than fflate & JSZip |
+| Write **PNG** images | **~8× faster than Pillow** at a comparable file size |
+| Use it **as a library** | Thread-safe (no globals), selectable backend (`auto`/`zlib`/`isal`), one accelerated core shared by every language |
+| Stay **compatible** | Compress with pigzpp, decompress with `gzip`/`pigz`/`unzip` — and vice-versa |
+
 > **Note:** This project is an experiment in AI-assisted software modernization. The goal was to study how capable coding agents are at rewriting real-world tools — not to take credit away from the original authors. pigz is the work of [Mark Adler](https://en.wikipedia.org/wiki/Mark_Adler), co-creator of zlib, gzip, and the DEFLATE format, who invested countless hours building and maintaining it. pigzpp exists because of that foundation.
 >
 > Read the full writeup: **[I Let Two AI Agents Race to Modernize pigz](https://gowda.ai/posts/2026/03/pigzpp-with-agents/)**
 
-**pigzpp** is a clean-room C++23 rewrite of [pigz](https://zlib.net/pigz/) (Parallel Implementation of GZip) by Mark Adler. It is a drop-in replacement for `pigz`/`gzip` that is **faster**, **thread-safe**, and usable as both a CLI tool and a library with **Python, Go, Rust, and WebAssembly** bindings. It also includes a native multi-entry **ZIP archive** API (parallel per-member DEFLATE, Zip64) and a compact PNG encoder/decoder for grayscale, grayscale+alpha, RGB, and RGBA `uint8` images, using the same accelerated DEFLATE stack for PNG `IDAT` data.
+## What's inside
 
-## Why
+pigz is one of those essential tools — if you've ever compressed GBs to TBs of data, you've probably used it. But pigz was written as a monolithic C program with a single global state (`struct g`, ~60 mutable fields), making it impossible to use as a library. pigzpp is a clean-room C++23 rewrite that keeps the speed and adds everything a modern codebase needs:
 
-pigz is one of those essential tools — if you've ever compressed GBs to TBs of data, you've probably used it. But pigz was written as a monolithic C program with a single global state (`struct g`, ~60 mutable fields), making it impossible to use as a library. pigzpp fixes this:
-
-- **Thread-safe library** — no global state, multiple compress/decompress operations in one process
-- **Faster** — [zlib-ng](https://github.com/zlib-ng/zlib-ng) (SIMD) and [ISA-L](https://github.com/intel/isa-l) (hand-tuned assembly) DEFLATE backends
+- **Faster** — [zlib-ng](https://github.com/zlib-ng/zlib-ng) (SIMD) and [ISA-L](https://github.com/intel/isa-l) (hand-tuned assembly) DEFLATE backends, parallelized across cores
 - **Selectable backend** — `auto` (ISA-L, fastest), `zlib` (zlib-ng, best ratio), or `isal`, via API and the `--engine` CLI flag
-- **Modern C++23** — `std::jthread`, exceptions, RAII, no `setjmp`/`longjmp`
-- **Bindings for many languages** — Python (pybind11), Go (cgo), Rust (FFI), and WebAssembly (Embind), all sharing one accelerated core
+- **Thread-safe library** — no global state, run many compress/decompress operations in one process
+- **Bindings for many languages** — Python (pybind11), C++, WebAssembly (Embind), Go (cgo), and Rust (FFI), all sharing one accelerated core
 - **ZIP archives** — native multi-entry ZIP (STORED + DEFLATE, Zip64) with a `zipfile`-like Python API, interoperable with `zipfile`/`unzip`
 - **PNG helpers** — encode/decode grayscale, grayscale+alpha, RGB, and RGBA image buffers
 - **Fully compatible** — compress with pigzpp, decompress with gzip/pigz, and vice versa
+- **Modern C++23** — `std::jthread`, exceptions, RAII, no `setjmp`/`longjmp`
 
 ## Performance
 
