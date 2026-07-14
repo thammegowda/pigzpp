@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install dependencies for the Docker gzip benchmark (benchmarks/docker).
+# Install dependencies for the Docker gzip benchmark (benchmarks/go-docker).
 #
 # Installs the Go toolchain (needed to build dockergzbench) and fetches the
 # Go module dependencies. Run with sudo so Go can be installed to /usr/local.

@@ -1,4 +1,4 @@
-module pigzpp/benchmarks/docker
+module pigzpp/benchmarks/go-docker
 
 go 1.22
 

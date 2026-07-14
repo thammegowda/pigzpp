@@ -7,8 +7,8 @@ dist/
 build-wasm*/
 benchmarks/wasm/node_modules/
 # Go benchmark build artifacts (source is tracked; binaries/inputs are not)
-benchmarks/docker/dockergzbench
-benchmarks/docker/*.tar
+benchmarks/go-docker/dockergzbench
+benchmarks/go-docker/*.tar
 # Editor local history
 **/.history
 .history/

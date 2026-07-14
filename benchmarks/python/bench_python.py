@@ -8,11 +8,11 @@ Compares in-memory (bytes) and file-based compression/decompression across:
   - pigzpp      (this project, parallel zlib-ng)
 
 Usage:
-    python benchmarks/bench_python.py
-    python benchmarks/bench_python.py --sizes 1 10 100
-    python benchmarks/bench_python.py --iterations 5
-    python benchmarks/bench_python.py --bytes-only
-    python benchmarks/bench_python.py --file-only
+    python benchmarks/python/bench_python.py
+    python benchmarks/python/bench_python.py --sizes 1 10 100
+    python benchmarks/python/bench_python.py --iterations 5
+    python benchmarks/python/bench_python.py --bytes-only
+    python benchmarks/python/bench_python.py --file-only
 """
 
 import argparse
