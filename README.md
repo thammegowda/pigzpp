@@ -69,7 +69,20 @@ The threaded WASM build (pthreads via Web Workers + `SharedArrayBuffer`) scales 
 
 At 8 threads pigzpp-wasm reaches **~179 MB/s** (4.7x over single-thread, ~6x native `CompressionStream`). Browsers must be cross-origin isolated (COOP/COEP headers) to enable `SharedArrayBuffer`, and blocking compress calls should run in a Web Worker. Reproduce with `node benchmarks/wasm/scaling.mjs --size 128 --threads 1,2,4,5,8` after `scripts/build_wasm.sh threads`.
 
-Benchmarks live under `benchmarks/` (`core`, `python`, `go-docker`, `rust`, `wasm`), all reading the shared corpus in `build/bench_data/`. See [notes/05-summary.md](notes/05-summary.md) for the earlier large-core CLI runs (48-core Xeon) and thread-scaling detail.
+**PNG encoding (Python API)** — `pigzpp.png.compress()` vs Pillow and OpenCV, on the 24-image [Kodak](https://r0k.us/graphics/kodak/) true-color set (768×512), best-of-5, round-trips verified. `vs Pillow` is the speedup over Pillow's default; `size` is output size relative to Pillow's default (lower = smaller):
+
+| encoder (preset) | img/s | vs Pillow | size |
+|---|---:|---:|---:|
+| **pigzpp `fast`** (default) | **62** | **8.6×** | 1.11× |
+| cv2 (default) | 51 | 7.2× | 1.09× |
+| pigzpp `balanced` | 39 | 5.5× | 1.06× |
+| pillow `fast` | 26 | 3.7× | 1.03× |
+| pillow (default) | 7.2 | 1.0× | 1.00× |
+| pigzpp `small` | 6.6 | 0.9× | 0.99× |
+
+pigzpp's `fast` preset encodes PNGs **8.6× faster than Pillow's default** at a comparable size; `balanced` is 5.5× faster and slightly smaller, while `small` matches Pillow's smallest output. Grayscale and 1-bit mask images show the same pattern (`fast` ≈ 6–7× Pillow). Reproduce: `python benchmarks/png/bench_png.py --image-dir <dir> --mode rgb --verify`.
+
+Benchmarks live under `benchmarks/` (`core`, `python`, `png`, `go-docker`, `rust`, `wasm`), all reading the shared corpus in `build/bench_data/`. See [notes/05-summary.md](notes/05-summary.md) for the earlier large-core CLI runs (48-core Xeon) and thread-scaling detail.
 
 ## Build
 
