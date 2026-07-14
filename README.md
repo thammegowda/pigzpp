@@ -4,34 +4,60 @@
 >
 > Read the full writeup: **[I Let Two AI Agents Race to Modernize pigz](https://gowda.ai/posts/2026/03/pigzpp-with-agents/)**
 
-**pigzpp** is a clean-room C++23 rewrite of [pigz](https://zlib.net/pigz/) (Parallel Implementation of GZip) by Mark Adler. It is a drop-in replacement for `pigz`/`gzip` that is **faster**, **thread-safe**, and usable as both a CLI tool and a library with Python bindings. It also includes a compact PNG encoder/decoder for grayscale, grayscale+alpha, RGB, and RGBA `uint8` images, using the same accelerated DEFLATE stack for PNG `IDAT` data.
+**pigzpp** is a clean-room C++23 rewrite of [pigz](https://zlib.net/pigz/) (Parallel Implementation of GZip) by Mark Adler. It is a drop-in replacement for `pigz`/`gzip` that is **faster**, **thread-safe**, and usable as both a CLI tool and a library with **Python, Go, Rust, and WebAssembly** bindings. It also includes a compact PNG encoder/decoder for grayscale, grayscale+alpha, RGB, and RGBA `uint8` images, using the same accelerated DEFLATE stack for PNG `IDAT` data.
 
 ## Why
 
 pigz is one of those essential tools — if you've ever compressed GBs to TBs of data, you've probably used it. But pigz was written as a monolithic C program with a single global state (`struct g`, ~60 mutable fields), making it impossible to use as a library. pigzpp fixes this:
 
 - **Thread-safe library** — no global state, multiple compress/decompress operations in one process
-- **Faster** — uses [zlib-ng](https://github.com/zlib-ng/zlib-ng) with SIMD optimizations instead of vanilla zlib
+- **Faster** — [zlib-ng](https://github.com/zlib-ng/zlib-ng) (SIMD) and [ISA-L](https://github.com/intel/isa-l) (hand-tuned assembly) DEFLATE backends
+- **Selectable backend** — `auto` (ISA-L, fastest), `zlib` (zlib-ng, best ratio), or `isal`, via API and the `--engine` CLI flag
 - **Modern C++23** — `std::jthread`, exceptions, RAII, no `setjmp`/`longjmp`
-- **Python bindings** — `pigzpp.open()` / `pigzpp.compress()` via pybind11
-- **PNG helpers** — `pigzpp.png.compress()` / `pigzpp.png.decompress()` / `pigzpp.png.save()` / `pigzpp.png.load()` for grayscale, grayscale+alpha, RGB, and RGBA image buffers
+- **Bindings for many languages** — Python (pybind11), Go (cgo), Rust (FFI), and WebAssembly (Embind), all sharing one accelerated core
+- **PNG helpers** — encode/decode grayscale, grayscale+alpha, RGB, and RGBA image buffers
 - **Fully compatible** — compress with pigzpp, decompress with gzip/pigz, and vice versa
 
 ## Performance
 
-Benchmarked on a 48-core Intel Xeon, Ubuntu 24.04.3 LTS:
+Benchmarked on an **Intel Xeon W-2235 (5 cores / 10 threads, 3.80 GHz)**, Ubuntu 22.04, on a **128 MB multilingual-text corpus** (English + Chinese Wikipedia; see `benchmarks/core/gen_data.py`) at **level 6, 8 threads**. Throughput is best-of-3.
 
-**CLI compression throughput (MB/s):**
+pigzpp ships two DEFLATE backends: **ISA-L** (`auto`/`isal`, fastest) and **zlib-ng** (`zlib`, best ratio). `ratio` is input/output (higher = smaller output).
 
-| Size | gzip 1.12 | pigz 2.8 | pigzpp | igzip (ISA-L) |
-|---|---|---|---|---|
-| 16 MB | 145 | 772 | 954 | **1824** |
-| 128 MB | 189 | 1597 | **2487** | 2542 |
-| 1024 MB | 199 | 1862 | **3365** | 2989 |
+**CLI — pigzpp vs gzip and pigz:**
 
-pigzpp is **1.8x faster** than pigz on compression and **2.4x faster** on decompression at default settings. At single-thread, the gap widens to **5.7x** (pure zlib-ng vs zlib).
+| tool | MB/s | ratio |
+|---|---|---|
+| gzip 1.12 (`-6`) | 16 | 2.83 |
+| pigz 2.6 (`-6 -p8`) | 103 | 2.83 |
+| pigzpp (`--engine zlib`) | 244 | 2.81 |
+| pigzpp (`--engine isal`, default) | **721** | 2.58 |
 
-See [notes/05-summary.md](notes/05-summary.md) for full benchmarks including Python bindings, decompression, thread scaling, and comparison with zlib-ng and ISA-L.
+pigzpp's zlib-ng backend is **2.4× faster than pigz** at the same ratio; ISA-L is **7× faster** (trading ~9% ratio for speed).
+
+**Language bindings — pigzpp vs the best competitor in each ecosystem** (128 MB text, L6, 8 threads):
+
+| language | pigzpp `isal` | pigzpp `zlib` | best competitor |
+|---|---|---|---|
+| **Python** | 959 MB/s | 279 MB/s | `gzip` (stdlib) 12 MB/s |
+| **Go** | 771 MB/s | 272 MB/s | `klauspost/pgzip` 281 MB/s |
+| **Rust** | 745 MB/s | 261 MB/s | `gzp` (parallel) 194 MB/s |
+
+Ratios: pigzpp `isal` 2.58, pigzpp `zlib` 2.81. In every language pigzpp is fastest, and its parallel **zlib-ng** backend matches or beats the best parallel competitor (`pgzip`, `gzp`) at an *equal or better* ratio.
+
+**WebAssembly** (single-thread, zlib-ng only — no ISA-L in WASM; 16 MB text, Node):
+
+| engine | MB/s | ratio |
+|---|---|---|
+| **pigzpp-wasm** | **45** | 2.81 |
+| node-zlib | 33 | 2.84 |
+| CompressionStream (native) | 27 | 2.84 |
+| fflate (JS) | 15 | 2.75 |
+| pako (JS) | 9 | 2.83 |
+
+Even single-threaded, pigzpp-wasm (zlib-ng + SIMD) beats the browser's native `CompressionStream` and the popular JS libraries.
+
+Benchmarks live under `benchmarks/` (`core`, `python`, `go-docker`, `rust`, `wasm`), all reading the shared corpus in `build/bench_data/`. See [notes/05-summary.md](notes/05-summary.md) for the earlier large-core CLI runs (48-core Xeon) and thread-scaling detail.
 
 ## Build
 
@@ -78,7 +104,9 @@ pigzpp -d file.gz
 pigzpp -dc file.gz > file.txt
 
 # Options
-pigzpp -p 8 -6 -c file.txt > file.gz   # 8 threads, level 6
+pigzpp -p 8 -6 -c file.txt > file.gz              # 8 threads, level 6
+pigzpp -p 8 -6 --engine zlib -c file.txt > file.gz # zlib-ng backend (best ratio)
+pigzpp -p 8 -6 --engine isal -c file.txt > file.gz # ISA-L backend (fastest, default)
 ```
 
 ### Python
@@ -96,7 +124,51 @@ with pigzpp.open("data.gz", "r") as f:
 # Bytes API
 compressed = pigzpp.compress(b"raw data", level=6, threads=0)
 original = pigzpp.decompress(compressed)
+
+# Select the DEFLATE backend: "auto" (default), "isal" (fastest), or "zlib" (best ratio)
+compressed = pigzpp.compress(large_bytes, level=6, engine="zlib")
 ```
+
+### Go
+
+```go
+import pigzpp "github.com/thammegowda/pigzpp/src/go"
+
+gz, _ := pigzpp.Compress(data, 6, 0)              // level 6, all cores, auto engine
+gz, _ = pigzpp.CompressEngine(data, 6, 8, pigzpp.EngineZlib)
+raw, _ := pigzpp.Decompress(gz, 0)
+png, _ := pigzpp.PngEncode(pixels, w, h, channels, 6, "rle", "up")
+```
+
+Requires the shared library (`cmake -DPIGZPP_BUILD_CAPI=ON` → `libpigzppc.so`); the binding's `build`/`replace` points at it.
+
+### Rust
+
+```rust
+use pigzpp::Engine;
+
+let gz = pigzpp::compress(&data, 6, 0, Engine::Auto)?;   // or Engine::Zlib / Engine::Isal
+let raw = pigzpp::decompress(&gz, 0)?;
+let png = pigzpp::png_encode(&pixels, w, h, channels, 6, "rle", "up")?;
+```
+
+```toml
+# Cargo.toml — links libpigzppc (set PIGZPP_BUILD_DIR if not ../../build)
+pigzpp = { path = "path/to/pigzpp/src/rust" }
+```
+
+### WebAssembly
+
+```js
+import createPigzpp from "./pigzpp_wasm.mjs";
+const M = await createPigzpp();
+const gz = M.gzipCompress(bytes, 6, "default", 1);   // Uint8Array in/out
+const raw = M.gzipDecompress(gz, 1);
+const png = M.pngEncode(pixels, w, h, channels, 6, "rle", "up");
+```
+
+Build the module with `scripts/build_wasm.sh` (Emscripten). The WASM build uses zlib-ng (ISA-L is x86-only); threads require cross-origin isolation.
+
 
 ### Python PNG
 
@@ -121,9 +193,9 @@ pixels, shape = pig.png.load("out.png", result="bytes")
 PNG benchmarks compare `pigzpp.png`, OpenCV, and Pillow modes against `PIL.Image.save(..., format="PNG")`, the common Python PNG baseline. A `*` in the benchmark output marks each library's default mode. Benchmarks can be run on RGB, grayscale, or binary mask inputs:
 
 ```bash
-python benchmarks/bench_png.py --mode rgb --verify
-python benchmarks/bench_png.py --mode gray --verify
-python benchmarks/bench_png.py --mode mask --verify
+python benchmarks/png/bench_png.py --mode rgb --verify
+python benchmarks/png/bench_png.py --mode gray --verify
+python benchmarks/png/bench_png.py --mode mask --verify
 ```
 
 For a load/manipulate/save example, see `scripts/sample_png_rgb_save.py`.
@@ -142,19 +214,23 @@ pigzpp/
 ├── src/pigzpp/
 │   ├── pigzpp.h          Public API header
 │   ├── config.h/cpp      Configuration (replaces global struct g)
-│   ├── compress.h/cpp    Parallel compressor
+│   ├── compress.h/cpp    Parallel compressor (ISA-L / zlib-ng backends)
 │   ├── decompress.h/cpp  Decompressor with parallel CRC
 │   ├── png.h/cpp         PNG encode/decode helpers
 │   ├── crc.h/cpp         CRC-32/Adler-32 with optimized combine
 │   ├── pool.h/cpp        Thread-safe buffer pool (RAII)
 │   ├── format.h/cpp      Gzip/zlib header/trailer parsing
 │   ├── io.h/cpp          Buffered I/O with EINTR retry
+│   ├── capi.h/cpp        C ABI (libpigzppc) for FFI bindings
 │   └── main.cpp          CLI entry point
-├── src/python/            pybind11 bindings
-├── tests/                 GoogleTest + pytest
-├── benchmarks/            Performance benchmarks
-├── third_party/           zlib-ng, pybind11, zopfli
-└── notes/                 Development notes and blog post
+├── src/python/           pybind11 bindings
+├── src/go/               Go binding (cgo → libpigzppc)
+├── src/rust/             Rust binding (FFI → libpigzppc)
+├── src/wasm/             WebAssembly binding (Embind)
+├── tests/                GoogleTest + pytest
+├── benchmarks/           core, python, png, go-docker, rust, wasm suites
+├── third_party/          zlib-ng, ISA-L, pybind11, zopfli
+└── notes/                Development notes and blog post
 ```
 
 ## Credits

@@ -75,7 +75,7 @@ test-py: build
 
 # Generate test data files and install Python benchmark dependencies
 bench-setup:
-	python3 benchmarks/gen_data.py --sizes $(SIZES) --data-dir $(BENCH_DATA_DIR)
+	python3 benchmarks/core/gen_data.py --sizes $(SIZES) --data-dir $(BENCH_DATA_DIR)
 	@echo "\nInstalling Python benchmark packages..."
 	pip install --quiet zlib-ng isal pytest 2>/dev/null || \
 		echo "Warning: some packages failed to install (optional)"
@@ -84,16 +84,16 @@ bench-setup:
 
 # Binary benchmark: gzip vs pigz vs pigzpp
 bench-bin: bench-setup
-	python benchmarks/bench_binary.py --sizes $(SIZES) --iterations $(ITERS) \
+	python benchmarks/core/bench_binary.py --sizes $(SIZES) --iterations $(ITERS) \
 		--threads $(THREADS) --pigzpp $(PIGZPP_BIN) --data-dir $(BENCH_DATA_DIR)
 
 # Python benchmark: gzip vs zlib-ng vs isal vs pigzpp
 bench-py: bench-setup
-	PYTHONPATH=$(CURDIR)/$(BUILD_DIR) python benchmarks/bench_python.py --sizes $(SIZES) --iterations $(ITERS)
+	PYTHONPATH=$(CURDIR)/$(BUILD_DIR) python benchmarks/python/bench_python.py --sizes $(SIZES) --iterations $(ITERS)
 
 # PNG benchmark: pigzpp.png and OpenCV against Pillow baseline
 bench-png: build
-	PYTHONPATH=$(CURDIR)/$(BUILD_DIR) python benchmarks/bench_png.py --verify --out $(BUILD_DIR)/png-bench
+	PYTHONPATH=$(CURDIR)/$(BUILD_DIR) python benchmarks/png/bench_png.py --verify --out $(BUILD_DIR)/png-bench
 
 # All benchmarks
 bench: bench-bin bench-py bench-png
@@ -115,7 +115,7 @@ PROFILE_DATA := $(BENCH_DATA_DIR)/$(PROFILE_SIZE)MB.txt
 profile: build
 	@mkdir -p $(BENCH_DATA_DIR)
 	@if [ ! -f $(PROFILE_DATA) ]; then \
-		python3 benchmarks/gen_data.py --sizes $(PROFILE_SIZE) --data-dir $(BENCH_DATA_DIR); \
+		python3 benchmarks/core/gen_data.py --sizes $(PROFILE_SIZE) --data-dir $(BENCH_DATA_DIR); \
 	fi
 	@echo "==> Profiling compression ($(PROFILE_SIZE) MB) ..."
 	perf record -g -o build/perf-compress.data -- $(PIGZPP_BIN) -c $(PROFILE_DATA) > /dev/null
