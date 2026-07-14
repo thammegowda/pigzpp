@@ -57,11 +57,16 @@ std::vector<uint8_t> run_via_temp_fds(
 
         const int in_fd = fileno(in);
         const int out_fd = fileno(out);
-        lseek(in_fd, 0, SEEK_SET);
+        if (in_fd < 0 || out_fd < 0)
+            throw std::runtime_error("run_via_temp_fds: fileno failed");
+        if (lseek(in_fd, 0, SEEK_SET) == static_cast<off_t>(-1))
+            throw std::runtime_error("run_via_temp_fds: lseek(input) failed");
 
         op(in_fd, out_fd);
 
         const off_t osize = lseek(out_fd, 0, SEEK_END);
+        if (osize == static_cast<off_t>(-1))
+            throw std::runtime_error("run_via_temp_fds: lseek(output) failed");
         lseek(out_fd, 0, SEEK_SET);
         std::vector<uint8_t> result(osize > 0 ? static_cast<size_t>(osize) : 0);
         const size_t got = readn(out_fd, result.data(), result.size());

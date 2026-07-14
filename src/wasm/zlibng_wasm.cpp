@@ -80,7 +80,10 @@ val gzip_decompress(const val& input) {
             zs.next_out = out.data() + used;
             zs.avail_out = static_cast<uInt>(out.size() - used);
         } else if (ret == Z_BUF_ERROR) {
-            break;
+            // Output space remains but inflate made no progress: the input
+            // ended before Z_STREAM_END, i.e. the stream is truncated/corrupt.
+            inflateEnd(&zs);
+            throw std::runtime_error("inflate failed: truncated input");
         }
     }
     out.resize(zs.total_out);

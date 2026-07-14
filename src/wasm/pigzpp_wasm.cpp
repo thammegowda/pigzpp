@@ -134,7 +134,8 @@ bool threads_enabled() {
 // must stay single-threaded regardless of the requested count.
 int zip_threads(int threads) {
 #ifdef PIGZPP_WASM_THREADS_ENABLED
-    return threads;
+    // 0 means "auto" in the core API; clamp negatives to 1 to avoid surprises.
+    return threads < 0 ? 1 : threads;
 #else
     (void)threads;
     return 1;
@@ -148,6 +149,8 @@ public:
     // Add a member. `method` is 0 (store) or 8 (deflate). `data` is a Uint8Array.
     void add(const std::string& name, const val& data, int method, int level,
              int threads) {
+        if (method != 0 && method != 8)
+            throw std::runtime_error("ZipWriter.add: method must be 0 (store) or 8 (deflate)");
         std::vector<uint8_t> bytes = to_vec(data);
         pigzpp::zip::WriteOptions opts;
         opts.method = static_cast<pigzpp::zip::Method>(method);
