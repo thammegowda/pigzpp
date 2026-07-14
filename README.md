@@ -10,6 +10,7 @@ Measured on an Intel Xeon W-2235 (128 MB text, level 6); see [Performance](#perf
 |---|---|
 | Compress on the **command line** | Up to **7× faster than `pigz`**, **45× faster than `gzip`** — or match `pigz`'s exact ratio and still be **2.4× faster** |
 | Compress from **Python** | Up to **80× faster than the standard-library `gzip`** — and the fastest option in Go, Rust, and JavaScript/WASM too |
+| Speed up **`docker build`** | Compress OCI/Docker image layers via cgo **10× faster than BuildKit's stdlib gzip at the same ratio** (or 34× with ISA-L) |
 | Build/read **ZIP archives** | `pigzpp.ZipFile` (a `zipfile` drop-in) writes **13–31× faster than Python's `zipfile`**; in the browser it reads `.docx`/`.xlsx`/`.zip` faster than fflate & JSZip |
 | Write **PNG** images | **The fastest PNG encoder we tested** — ahead of **OpenCV** (`cv2`, a hand-optimized C++ encoder) and **~8× faster than Pillow**, at a comparable size |
 | Use it **as a library** | Thread-safe (no globals), selectable backend (`auto`/`zlib`/`isal`), one accelerated core shared by every language |
@@ -58,6 +59,18 @@ pigzpp's zlib-ng backend is **2.4× faster than pigz** at the same ratio; ISA-L 
 | **Rust** | 745 MB/s | 261 MB/s | `gzp` (parallel) 194 MB/s |
 
 Ratios: pigzpp `isal` 2.58, pigzpp `zlib` 2.81. In every language pigzpp is fastest, and its parallel **zlib-ng** backend matches or beats the best parallel competitor (`pgzip`, `gzp`) at an *equal or better* ratio.
+
+**Docker / OCI image layers** — image layers are gzip-compressed tarballs, and `docker build` / BuildKit compress them single-threaded with Go's `compress/gzip`. Dropping in pigzpp through cgo is a straight speedup. On a **real 637 MB layer** (the largest layer of the official `python:3.12` image), level 6, 8 threads, best-of-3:
+
+| method | MB/s | ratio | vs stdlib |
+|---|---:|---:|---:|
+| `compress/gzip` (Go stdlib — BuildKit today) | 31 | 2.83 | 1.0× |
+| `klauspost/compress` (faster single-thread) | 82 | 2.76 | 2.6× |
+| `klauspost/pgzip` (parallel) | 339 | 2.76 | 10.9× |
+| **pigzpp `zlib`** (cgo) | 313 | 2.83 | **10.1×** |
+| **pigzpp `isal`** (cgo) | **1076** | 2.61 | **34.6×** |
+
+pigzpp's zlib-ng backend compresses a Docker layer **10× faster than the stdlib at the same ratio** (same output size class), and ISA-L reaches **34× faster** — turning a 20-second layer compression into ~0.6 s. Reproduce: `benchmarks/go-docker/fetch_layer.sh` downloads a real layer from any registry (no Docker daemon needed), then `./dockergzbench -input layer.tar -threads 8 -methods stdlib,pgzip,pigzppcgo-zlib,pigzppcgo-isal`.
 
 **WebAssembly** (zlib-ng + 128-bit SIMD; ISA-L is x86-only, so not available in WASM; Node 22). Single-thread, 16 MB text:
 
