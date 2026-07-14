@@ -4,7 +4,7 @@
 >
 > Read the full writeup: **[I Let Two AI Agents Race to Modernize pigz](https://gowda.ai/posts/2026/03/pigzpp-with-agents/)**
 
-**pigzpp** is a clean-room C++23 rewrite of [pigz](https://zlib.net/pigz/) (Parallel Implementation of GZip) by Mark Adler. It is a drop-in replacement for `pigz`/`gzip` that is **faster**, **thread-safe**, and usable as both a CLI tool and a library with **Python, Go, Rust, and WebAssembly** bindings. It also includes a compact PNG encoder/decoder for grayscale, grayscale+alpha, RGB, and RGBA `uint8` images, using the same accelerated DEFLATE stack for PNG `IDAT` data.
+**pigzpp** is a clean-room C++23 rewrite of [pigz](https://zlib.net/pigz/) (Parallel Implementation of GZip) by Mark Adler. It is a drop-in replacement for `pigz`/`gzip` that is **faster**, **thread-safe**, and usable as both a CLI tool and a library with **Python, Go, Rust, and WebAssembly** bindings. It also includes a native multi-entry **ZIP archive** API (parallel per-member DEFLATE, Zip64) and a compact PNG encoder/decoder for grayscale, grayscale+alpha, RGB, and RGBA `uint8` images, using the same accelerated DEFLATE stack for PNG `IDAT` data.
 
 ## Why
 
@@ -15,6 +15,7 @@ pigz is one of those essential tools — if you've ever compressed GBs to TBs of
 - **Selectable backend** — `auto` (ISA-L, fastest), `zlib` (zlib-ng, best ratio), or `isal`, via API and the `--engine` CLI flag
 - **Modern C++23** — `std::jthread`, exceptions, RAII, no `setjmp`/`longjmp`
 - **Bindings for many languages** — Python (pybind11), Go (cgo), Rust (FFI), and WebAssembly (Embind), all sharing one accelerated core
+- **ZIP archives** — native multi-entry ZIP (STORED + DEFLATE, Zip64) with a `zipfile`-like Python API, interoperable with `zipfile`/`unzip`/`archive/zip`
 - **PNG helpers** — encode/decode grayscale, grayscale+alpha, RGB, and RGBA image buffers
 - **Fully compatible** — compress with pigzpp, decompress with gzip/pigz, and vice versa
 
@@ -195,6 +196,72 @@ const png = M.pngEncode(pixels, w, h, channels, 6, "rle", "up");
 Build the module with `scripts/build_wasm.sh` (Emscripten). The WASM build uses zlib-ng (ISA-L is x86-only); threads require cross-origin isolation.
 
 
+### ZIP archives
+
+pigzpp has a native, multi-entry ZIP container (STORED + DEFLATE, Zip64 for large
+entries/archives) that reuses the parallel compressor per member. The Python API
+mirrors a subset of the standard library's `zipfile`, and archives interoperate
+with `zipfile`, Go's `archive/zip`, `unzip`, and other standard tools.
+
+```python
+import pigzpp
+
+# Write (parallel DEFLATE per member; engine = "auto"/"isal"/"zlib")
+with pigzpp.ZipFile("out.zip", "w", threads=8, engine="isal") as z:
+    z.writestr("hello.txt", "hi there")
+    z.write("/path/to/photo.png")                       # add a file from disk
+    z.writestr("raw.bin", data, compress_type=pigzpp.ZIP_STORED)
+    z.setcomment("made by pigzpp")
+
+# Read / list / extract / verify
+with pigzpp.ZipFile("out.zip") as z:          # mode "r" (also "a" to append, "x" to create)
+    print(z.namelist())
+    blob = z.read("hello.txt")
+    assert z.testzip() is None                 # CRC-check every member
+    z.extractall("out_dir")
+    for info in z.infolist():
+        print(info.filename, info.file_size, info.compress_size, info.compress_type)
+```
+
+The same archive type is available from every surface:
+
+```cpp
+// C++: pigzpp/zip.h
+pigzpp::zip::ZipWriter w("out.zip");
+w.write_str("a.txt", "hello");
+w.close();
+pigzpp::zip::ZipReader r("out.zip");
+auto bytes = r.read("a.txt");
+```
+
+```go
+// Go
+w, _ := pigzpp.NewZipWriter()
+w.Add("a.txt", []byte("hello"), pigzpp.DefaultAddOptions())
+archive, _ := w.Finish()
+r, _ := pigzpp.OpenZip(archive); defer r.Close()
+data, _ := r.Read("a.txt")
+```
+
+```rust
+// Rust
+let mut w = pigzpp::ZipWriter::new()?;
+w.add("a.txt", b"hello", pigzpp::AddOptions::default())?;
+let archive = w.finish()?;
+let r = pigzpp::ZipReader::open(&archive)?;
+let data = r.read("a.txt")?;
+```
+
+```js
+// WebAssembly (Embind)
+const w = new M.ZipWriter();
+w.add("a.txt", new TextEncoder().encode("hello"), 8, 6, 1);  // name, bytes, method, level, threads
+const archive = w.finish(); w.delete();
+const r = new M.ZipReader(archive);
+const data = r.read("a.txt"); r.delete();
+```
+
+
 ### Python PNG
 
 ```python
@@ -242,6 +309,7 @@ pigzpp/
 │   ├── compress.h/cpp    Parallel compressor (ISA-L / zlib-ng backends)
 │   ├── decompress.h/cpp  Decompressor with parallel CRC
 │   ├── png.h/cpp         PNG encode/decode helpers
+│   ├── zip.h/cpp         Native multi-entry ZIP archives (ZipWriter/ZipReader)
 │   ├── crc.h/cpp         CRC-32/Adler-32 with optimized combine
 │   ├── pool.h/cpp        Thread-safe buffer pool (RAII)
 │   ├── format.h/cpp      Gzip/zlib header/trailer parsing
