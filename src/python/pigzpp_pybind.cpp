@@ -5,15 +5,19 @@
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 
+#include "compress.h"
+#include "config.h"
 #include "png.h"
 
 #include <zlib.h>
 
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace py = pybind11;
@@ -120,11 +124,17 @@ private:
 };
 
 
-// ---- Direct memory compress/decompress via raw CPython C API ----
-// These use zlib directly (not pigzpp_lib's fd-based API) because:
-// 1. We need to write directly into PyBytes objects (zero-copy output)
-// 2. We need fine-grained GIL release around inflate/deflate calls
-// 3. The fd-based Compressor/Decompressor add pipe/thread overhead
+// ---- In-memory compress/decompress ----
+// Small inputs use zlib directly via the CPython C API, which is optimal on
+// copies: the Py_buffer input is read in place and deflate writes straight
+// into the result PyBytes (zero intermediate copy), with the GIL released
+// around the deflate/inflate call.
+//
+// Large inputs (>= PARALLEL_MIN_BYTES) instead go through pigzpp's in-memory
+// buffer API (compress_bytes_parallel), which runs the multi-threaded ISA-L
+// pipeline. That costs one malloc->PyBytes copy of the (smaller) output, but
+// wins ~20x on realistic data by using all cores. Raw deflate and small inputs
+// stay on the single-threaded zero-copy path.
 //
 // Helper: read uncompressed size from gzip trailer (last 4 bytes).
 // Returns 0 if input is not gzip or too short.
@@ -208,19 +218,89 @@ compress_bytes(const Py_buffer &buf, int level, int window_bits, int strategy)
     return result;
 }
 
+// Threshold below which the single-threaded zero-copy path beats the parallel
+// pipeline (thread spawn + coordination overhead dominates for small inputs).
+static constexpr Py_ssize_t PARALLEL_MIN_BYTES = 1 << 20; // 1 MB
+
+// Parse an engine name ("auto"/"zlib"/"isal") to the backend enum.
+static pigzpp::Engine parse_engine(const char *s) {
+    if (!s || !std::strcmp(s, "auto")) return pigzpp::Engine::Auto;
+    if (!std::strcmp(s, "zlib") || !std::strcmp(s, "zlib-ng") ||
+        !std::strcmp(s, "zlibng")) return pigzpp::Engine::Zlib;
+    if (!std::strcmp(s, "isal") || !std::strcmp(s, "isa-l"))
+        return pigzpp::Engine::Isal;
+    return pigzpp::Engine::Auto;
+}
+
+// Parallel gzip/zlib compression via pigzpp's in-memory buffer API. Runs the
+// multi-threaded pipeline (ISA-L or zlib-ng per `engine`) and copies the owned
+// output into a PyBytes (one malloc->PyBytes copy). Not valid for raw deflate.
+static PyObject *
+compress_bytes_parallel(const Py_buffer &buf, int level,
+                        pigzpp::Format form, int strategy, int threads,
+                        pigzpp::Engine engine)
+{
+    pigzpp::Config cfg;
+    cfg.form = form;
+    cfg.mode = pigzpp::Mode::Compress;
+    cfg.level = level;
+    cfg.strategy = static_cast<pigzpp::Strategy>(strategy);
+    cfg.engine = engine;
+    cfg.procs = threads > 0 ? threads
+                            : static_cast<int>(std::thread::hardware_concurrency());
+    if (cfg.procs < 1) cfg.procs = 1;
+
+    uint8_t *out = nullptr;
+    size_t out_size = 0;
+    std::string err;
+
+    Py_BEGIN_ALLOW_THREADS
+    try {
+        pigzpp::Compressor comp(cfg);
+        out_size = comp.compress_buffer(
+            static_cast<const uint8_t *>(buf.buf),
+            static_cast<size_t>(buf.len), &out);
+    } catch (const std::exception &e) {
+        err = e.what();
+    } catch (...) {
+        err = "pigzpp: compression failed";
+    }
+    Py_END_ALLOW_THREADS
+
+    if (!err.empty()) {
+        std::free(out);
+        PyErr_SetString(PyExc_RuntimeError, err.c_str());
+        return NULL;
+    }
+
+    PyObject *result = PyBytes_FromStringAndSize(
+        reinterpret_cast<const char *>(out), static_cast<Py_ssize_t>(out_size));
+    std::free(out);
+    return result; // NULL propagates on allocation failure
+}
+
 static PyObject *
 pigzpp_compress(PyObject * /*module*/, PyObject *args, PyObject *kwargs)
 {
-    static const char *kwlist[] = {"data", "level", NULL};
+    static const char *kwlist[] = {"data", "level", "engine", NULL};
     Py_buffer buf;
     int level = 6;
+    const char *engine_s = "auto";
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "y*|i",
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "y*|is",
                                      const_cast<char**>(kwlist),
-                                     &buf, &level))
+                                     &buf, &level, &engine_s))
         return NULL;
 
-    PyObject *result = compress_bytes(buf, level, 15 + 16, Z_DEFAULT_STRATEGY);
+    pigzpp::Engine engine = parse_engine(engine_s);
+    PyObject *result;
+    // Explicit backend, or large input -> parallel pipeline; small auto -> the
+    // single-threaded zero-copy zlib path.
+    if (engine != pigzpp::Engine::Auto || buf.len >= PARALLEL_MIN_BYTES)
+        result = compress_bytes_parallel(buf, level, pigzpp::Format::Gzip,
+                                         Z_DEFAULT_STRATEGY, /*threads=*/0, engine);
+    else
+        result = compress_bytes(buf, level, 15 + 16, Z_DEFAULT_STRATEGY);
     PyBuffer_Release(&buf);
     return result;
 }
@@ -228,17 +308,24 @@ pigzpp_compress(PyObject * /*module*/, PyObject *args, PyObject *kwargs)
 static PyObject *
 pigzpp_compress_zlib(PyObject * /*module*/, PyObject *args, PyObject *kwargs)
 {
-    static const char *kwlist[] = {"data", "level", "strategy", NULL};
+    static const char *kwlist[] = {"data", "level", "strategy", "engine", NULL};
     Py_buffer buf;
     int level = 6;
     int strategy = Z_DEFAULT_STRATEGY;
+    const char *engine_s = "auto";
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "y*|ii",
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "y*|iis",
                                      const_cast<char**>(kwlist),
-                                     &buf, &level, &strategy))
+                                     &buf, &level, &strategy, &engine_s))
         return NULL;
 
-    PyObject *result = compress_bytes(buf, level, 15, strategy);
+    pigzpp::Engine engine = parse_engine(engine_s);
+    PyObject *result;
+    if (engine != pigzpp::Engine::Auto || buf.len >= PARALLEL_MIN_BYTES)
+        result = compress_bytes_parallel(buf, level, pigzpp::Format::Zlib,
+                                         strategy, /*threads=*/0, engine);
+    else
+        result = compress_bytes(buf, level, 15, strategy);
     PyBuffer_Release(&buf);
     return result;
 }
