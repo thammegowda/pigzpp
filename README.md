@@ -11,7 +11,7 @@ Measured on an Intel Xeon W-2235 (128 MB text, level 6); see [Performance](#perf
 | Compress on the **command line** | Up to **7× faster than `pigz`**, **45× faster than `gzip`** — or match `pigz`'s exact ratio and still be **2.4× faster** |
 | Compress from **Python** | Up to **80× faster than the standard-library `gzip`** — and the fastest option in Go, Rust, and JavaScript/WASM too |
 | Build/read **ZIP archives** | `pigzpp.ZipFile` (a `zipfile` drop-in) writes **13–31× faster than Python's `zipfile`**; in the browser it reads `.docx`/`.xlsx`/`.zip` faster than fflate & JSZip |
-| Write **PNG** images | **~8× faster than Pillow** at a comparable file size |
+| Write **PNG** images | **The fastest PNG encoder we tested** — ahead of **OpenCV** (`cv2`, a hand-optimized C++ encoder) and **~8× faster than Pillow**, at a comparable size |
 | Use it **as a library** | Thread-safe (no globals), selectable backend (`auto`/`zlib`/`isal`), one accelerated core shared by every language |
 | Stay **compatible** | Compress with pigzpp, decompress with `gzip`/`pigz`/`unzip` — and vice-versa |
 
@@ -94,7 +94,7 @@ At 8 threads pigzpp-wasm reaches **~179 MB/s** (4.7x over single-thread, ~6x nat
 | pillow (default) | 7.2 | 1.0× | 1.00× |
 | pigzpp `small` | 6.6 | 0.9× | 0.99× |
 
-pigzpp's `fast` preset encodes PNGs **8.6× faster than Pillow's default** at a comparable size; `balanced` is 5.5× faster and slightly smaller, while `small` matches Pillow's smallest output. Grayscale and 1-bit mask images show the same pattern (`fast` ≈ 6–7× Pillow). Reproduce: `python benchmarks/png/bench_png.py --image-dir <dir> --mode rgb --verify`.
+pigzpp's `fast` preset is the **fastest PNG encoder we benchmarked** on true-color images: **1.2× faster than OpenCV** (`cv2.imencode`, itself a hand-optimized C++ encoder — the fastest PNG library with Python bindings) and **8.6× faster than Pillow's default**, at a comparable size. `balanced` is 5.5× Pillow and slightly smaller, while `small` matches Pillow's smallest output. Grayscale and 1-bit mask images show the same pattern (`fast` ≈ 6–7× Pillow; RGB and mask beat OpenCV, grayscale is on par). Reproduce: `python benchmarks/png/bench_png.py --image-dir <dir> --mode rgb --verify`.
 
 **ZIP archives (Python API)** — `pigzpp.ZipFile` vs the standard library's `zipfile`, both writing real DEFLATE archives and reading them back (128 MB text, level 6, 8 threads, best-of-3):
 
