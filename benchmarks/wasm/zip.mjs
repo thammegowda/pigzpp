@@ -45,6 +45,10 @@ const MEMBERS = Number(arg('members', '50'));
 const LEVEL = Number(arg('level', '6'));
 const ITERS = Number(arg('iters', '5'));
 const FILE = arg('file', null);
+// Thread counts for the pigzpp-wasm create path. Only >1 has effect when run
+// against the threaded build (scripts/build_wasm.sh threads); the non-threaded
+// module clamps every member to a single worker.
+const THREADS = arg('threads', '1,4').split(',').map(Number);
 
 function fmt(x, d = 1) { return x.toFixed(d); }
 
@@ -145,15 +149,15 @@ async function writeBench(M, fflate, JSZip, parts, totalBytes) {
   const mb = totalBytes / 1e6;
   const rows = [];
 
-  {
+  for (const t of THREADS) {
     const { ms, out } = await best(() => {
       const w = new M.ZipWriter();
-      for (const p of parts) w.add(p.name, p.data, 8, LEVEL, 1);
+      for (const p of parts) w.add(p.name, p.data, 8, LEVEL, t);
       const archive = w.finish();
       w.delete();
       return archive.length;
     });
-    rows.push(['pigzpp-wasm', ms, out]);
+    rows.push([`pigzpp-wasm (t=${t})`, ms, out]);
   }
   {
     const fmap = {};

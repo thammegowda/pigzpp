@@ -61,15 +61,24 @@ npm install                              # fflate + jszip
 node zip.mjs --size 16 --members 50
 # A real ZIP-based file (Word doc, spreadsheet, epub, jar, wheel, ...):
 node zip.mjs --file /path/to/document.docx
+# Threaded create (per-member parallel DEFLATE) needs the threaded build:
+scripts/build_wasm.sh threads
+node zip.mjs --module ../../build-wasm-threads/wasm/pigzpp_wasm.mjs --threads 1,4
 ```
 
-Sample (16 MB corpus across 50 members, Node 22, single-thread, level 6):
+Sample (16 MB corpus, Node 22, level 6; `t=N` = worker threads per member,
+threaded build):
 
-| create zip | MB/s | archive (MB) | ratio |
-|---|---:|---:|---:|
-| **pigzpp-wasm** | **44.5** | 6.03 | 2.78 |
-| fflate | 15.4 | 6.16 | 2.72 |
-| JSZip | 8.9 | 6.00 | 2.80 |
+| create zip | 50 members | 4 large members | archive (MB) | ratio |
+|---|---:|---:|---:|---:|
+| **pigzpp-wasm (t=4)** | **66.7** | **109.1** | 6.0 | 2.78 |
+| pigzpp-wasm (t=1) | 41.6 | 44.0 | 6.0 | 2.78 |
+| fflate | 15.4 | 15.0 | 6.1 | 2.72 |
+| JSZip | 8.9 | 8.7 | 6.0 | 2.80 |
+
+(numbers are MB/s over the uncompressed input). Threads parallelize each member's
+DEFLATE, so the gain grows with member size — ~1.6× at 50 small members, ~2.5× at
+4 large members. Reads are single-threaded per member:
 
 | read + unzip all | MB/s |
 |---|---:|
@@ -86,5 +95,6 @@ Reading a real **6 MB `.docx`** (19 MB of XML across 6 members):
 | JSZip | 87 |
 
 Even single-threaded, pigzpp-wasm creates archives ~3–5× faster and reads them
-~2–3× faster than the popular JS libraries, at an equal-or-better ratio.
+~2–3× faster than the popular JS libraries, at an equal-or-better ratio; the
+threaded build widens the create gap further.
 
