@@ -1,0 +1,4 @@
+writer	write_mbps	read_mbps	ratio
+zipfile (stdlib)	17.5	198.4	2.8270000047180655
+pigzpp isal	484.7	325.1	2.580000009611249
+pigzpp zlib	211.6	363.8	2.8110000049426853

@@ -1,0 +1,8 @@
+scope	method	mbps
+CLI	gzip	165.4932211258902
+CLI	pigz	212.124519574564
+CLI	pigzpp	711.3914709955878
+Python	gzip (stdlib)	192.29501051129267
+Python	zlib-ng	457.0116956668015
+Python	python-isal	524.5045383119254
+Python	pigzpp	497.8348619854887

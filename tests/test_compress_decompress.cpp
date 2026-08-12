@@ -171,6 +171,28 @@ TEST_F(CompressDecompressTest, CrossCompatGzipCompress) {
     EXPECT_EQ(read_file_content(restored), data);
 }
 
+TEST_F(CompressDecompressTest, ConcatenatedGzipMembersBuffer) {
+    auto gzip = [](const std::string& data) {
+        Config cfg;
+        Compressor comp(cfg);
+        uint8_t* compressed = nullptr;
+        size_t size = comp.compress_buffer(
+            reinterpret_cast<const uint8_t*>(data.data()), data.size(), &compressed);
+        std::vector<uint8_t> result(compressed, compressed + size);
+        std::free(compressed);
+        return result;
+    };
+
+    auto joined = gzip("first");
+    auto second = gzip("second");
+    joined.insert(joined.end(), second.begin(), second.end());
+
+    Config cfg;
+    Decompressor decomp(cfg);
+    auto restored = decomp.decompress_buffer(joined.data(), joined.size());
+    EXPECT_EQ(std::string(restored.begin(), restored.end()), "firstsecond");
+}
+
 TEST_F(CompressDecompressTest, TestMode) {
     auto orig = path("orig.txt");
     auto gz = path("orig.txt.gz");

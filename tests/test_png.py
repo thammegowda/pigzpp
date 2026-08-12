@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import gc
 
 import pytest
 
@@ -169,7 +170,7 @@ def test_png_preset_fast_matches_explicit_options():
         height=height,
         channels=3,
         level=1,
-        strategy="rle",
+        strategy="default",
         filter="up",
     )
     preset = pigzpp.png.compress(pixels, width=width, height=height, channels=3, preset="fast")
@@ -218,6 +219,23 @@ def test_png_decompress_array_rgb_roundtrip():
     assert decoded.dtype == np.uint8
     assert decoded.shape == (height, width, 3)
     assert np.array_equal(decoded, pixels)
+
+
+def test_png_array_owns_decoded_pixels():
+    np = pytest.importorskip("numpy")
+    width, height = 23, 19
+    expected = np.frombuffer(_rgb_pixels(width, height), dtype=np.uint8).reshape(height, width, 3)
+    encoded = pigzpp.png.compress(expected)
+
+    decoded = pigzpp.png.decompress_array(encoded)
+    del encoded
+    gc.collect()
+
+    # Allocate enough unrelated memory to expose a dangling capsule/view.
+    _ = [bytearray(decoded.nbytes) for _ in range(16)]
+    assert decoded.flags.c_contiguous
+    assert decoded.dtype == np.uint8
+    assert np.array_equal(decoded, expected)
 
 
 def test_png_decompress_result_numpy_roundtrip():
@@ -396,3 +414,9 @@ def test_png_compress_infers_numpy_grayscale_shape():
 def test_png_rejects_unsupported_channels():
     with pytest.raises(ValueError):
         pigzpp.png.compress(b"\x00" * 80, width=4, height=4, channels=5)
+
+
+def test_png_rejects_non_contiguous_byte_buffer():
+    pixels = memoryview(bytearray(range(64)))[::2]
+    with pytest.raises(ValueError, match="C-contiguous"):
+        pigzpp.png.compress(pixels, width=8, height=4, channels=1)

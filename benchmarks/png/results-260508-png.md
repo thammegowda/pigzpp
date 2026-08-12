@@ -13,7 +13,7 @@ has decompress_array: True
 Benchmark command pattern:
 
 ```bash
-python benchmarks/bench_png.py \
+python benchmarks/png/bench_png.py \
   --image-dir images-dir \
   --limit 200 \
   --loops 3 \

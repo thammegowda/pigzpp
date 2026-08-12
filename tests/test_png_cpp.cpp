@@ -92,7 +92,7 @@ TEST_F(PngTest, FastPresetMatchesExplicitOptions) {
 
     pigzpp::png::EncodeOptions explicit_options;
     explicit_options.level = 1;
-    explicit_options.strategy = pigzpp::Strategy::Rle;
+    explicit_options.strategy = pigzpp::Strategy::Default;
     explicit_options.filter = pigzpp::png::FilterMode::Up;
 
     auto explicit_png = pigzpp::png::encode_buffer(pixels.data(), pixels.size(), width, height, 3, explicit_options);

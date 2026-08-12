@@ -22,6 +22,12 @@ class TestCompressDecompress:
         data = os.urandom(1_000_000)
         assert pigzpp.decompress(pigzpp.compress(data)) == data
 
+    @pytest.mark.parametrize("engine", ["zlib", "isal"])
+    def test_roundtrip_explicit_engine_and_threads(self, engine):
+        data = (b"explicit worker selection" * 100_000)
+        compressed = pigzpp.compress(data, level=6, engine=engine, threads=2)
+        assert gzip.decompress(compressed) == data
+
     def test_empty(self):
         compressed = pigzpp.compress(b"")
         assert pigzpp.decompress(compressed) == b""
@@ -41,10 +47,28 @@ class TestCompressDecompress:
         compressed = pigzpp.compress_raw(data, level=1)
         assert zlib.decompress(compressed, wbits=-15) == data
 
+    def test_compress_raw_large_input_roundtrip(self):
+        # The single-threaded path feeds zlib in <=UINT_MAX chunks; exercise a
+        # multi-megabyte raw stream to guard against output-buffer truncation.
+        data = os.urandom(5_000_000)
+        compressed = pigzpp.compress_raw(data, level=1)
+        assert zlib.decompress(compressed, wbits=-15) == data
+
     def test_decompress_stdlib_gzip(self):
         data = b"created by stdlib gzip"
         compressed = gzip.compress(data)
         assert pigzpp.decompress(compressed) == data
+
+    def test_decompress_exact_size_hint(self):
+        data = b"direct Python bytes output" * 100_000
+        compressed = zlib.compress(data)
+        assert pigzpp.decompress(compressed, bufsize=len(data)) == data
+
+    @pytest.mark.parametrize("offset", [-1, 1, 1024])
+    def test_decompress_wrong_size_hint_falls_back(self, offset):
+        data = b"growable output fallback" * 10_000
+        compressed = gzip.compress(data)
+        assert pigzpp.decompress(compressed, bufsize=len(data) + offset) == data
 
     def test_compress_levels(self):
         data = b"x" * 10000
@@ -57,6 +81,25 @@ class TestCompressDecompress:
     def test_decompress_invalid_data(self):
         with pytest.raises(RuntimeError):
             pigzpp.decompress(b"not gzip data")
+
+    @pytest.mark.parametrize("factory", [bytes, bytearray, memoryview])
+    def test_bytes_like_inputs(self, factory):
+        data = b"stable ABI buffer input" * 100
+        source = factory(data)
+        assert pigzpp.decompress(pigzpp.compress(source)) == data
+        assert zlib.decompress(pigzpp.compress_zlib(source)) == data
+        assert zlib.decompress(pigzpp.compress_raw(source), wbits=-15) == data
+
+    def test_numpy_buffer_input(self):
+        np = pytest.importorskip("numpy")
+        data = np.arange(4096, dtype=np.uint8)
+        compressed = pigzpp.compress(data)
+        assert pigzpp.decompress(compressed) == data.tobytes()
+
+    def test_rejects_non_contiguous_buffer(self):
+        source = memoryview(bytearray(range(32)))[::2]
+        with pytest.raises(ValueError, match="C-contiguous"):
+            pigzpp.compress(source)
 
 
 class TestFileAPI:
@@ -118,11 +161,12 @@ class TestFileAPI:
 
     def test_invalid_mode(self):
         with pytest.raises(ValueError):
-            pigzpp.open("/dev/null", "x")
+            pigzpp.open(os.devnull, "x")
 
-    def test_read_nonexistent_file(self):
+    def test_read_nonexistent_file(self, tmp_path):
+        missing = tmp_path / "missing" / "path.gz"
         with pytest.raises(RuntimeError):
-            with pigzpp.open("/nonexistent/path.gz", "r") as f:
+            with pigzpp.open(str(missing), "r") as f:
                 f.read()
 
     def test_compression_level(self, tmp_path):

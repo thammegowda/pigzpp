@@ -7,7 +7,7 @@ Installing Python benchmark packages...
 pip install --quiet zlib-ng isal pytest 2>/dev/null || \
         echo "Warning: some packages failed to install (optional)"
 ✓ Benchmark setup complete
-python benchmarks/bench_binary.py --sizes 16 128 1024 --iterations 1 \
+python benchmarks/core/bench_binary.py --sizes 16 128 1024 --iterations 1 \
         --threads 1 4 --pigzpp build/pigzpp --data-dir build/bench_data
 Binaries:
       gzip: /usr/bin/gzip -- gzip 1.10

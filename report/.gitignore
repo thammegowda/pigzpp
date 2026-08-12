@@ -1,0 +1,16 @@
+build/
+*.aux
+*.log
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
+# Downloaded reference papers (copyrighted; kept locally for study only)
+references/*.pdf
+
+# Fonts are fetched by setup.sh (OFL, not committed to keep the repo lean)
+fonts/*.otf
+
+# ACL bibliography style is fetched by setup.sh (not committed)
+acl_natbib.bst

@@ -4,8 +4,8 @@
 Produces clean tables of throughput (MB/s) with speedup over pigz.
 
 Usage:
-    python benchmarks/bench_binary.py
-    python benchmarks/bench_binary.py --sizes 1 10 100 --iterations 3
+    python benchmarks/core/bench_binary.py
+    python benchmarks/core/bench_binary.py --sizes 1 10 100 --iterations 3
 """
 
 import argparse

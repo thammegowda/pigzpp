@@ -5,8 +5,10 @@
 
 #include "config.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace pigzpp {
 
@@ -25,11 +27,20 @@ public:
     // List contents of compressed file to stdout.
     void list(int in_fd);
 
+    // Decompress an in-memory buffer, returning the decompressed bytes.
+    // Convenience wrapper around decompress() using in-memory temp fds;
+    // suitable for language bindings (e.g. WebAssembly) that pass byte arrays.
+    std::vector<uint8_t> decompress_buffer(const uint8_t* data, size_t size);
+
 private:
     Config cfg_;
 
     // The actual inflate/check/write loop.
     void infchk(int in_fd, int out_fd);
+
+    // Direct in-memory inflate for gzip/zlib streams; avoids the temp-fd
+    // round-trip used by decompress_buffer's fallback.
+    std::vector<uint8_t> direct_decompress(const uint8_t* data, size_t size);
 };
 
 } // namespace pigzpp

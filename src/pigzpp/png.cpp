@@ -105,10 +105,10 @@ uint16_t zlib_header(int level) {
 }
 
 int isal_level(int level) {
-    if (level <= 1) return 0;
-    if (level <= 5) return 1;
-    if (level <= 8) return 2;
-    return 3;
+    if (level <= 0) return 0;
+    if (level <= 2) return 1;
+    if (level <= 4) return 2;
+    return 3;  // 5-9: best ISA-L ratio
 }
 
 size_t isal_level_buf_size(int isal_level_value) {
@@ -415,7 +415,11 @@ Preset parse_preset(const std::string& value) {
 EncodeOptions preset_options(Preset preset) {
     switch (preset) {
     case Preset::Fast:
-        return EncodeOptions{1, Strategy::Rle, FilterMode::Up, DEFAULT_IDAT_CHUNK_SIZE};
+        // Strategy::Default lets the DEFLATE step pick ISA-L (x86) on the
+        // already-filtered scanlines, which is ~1.6x faster than zlib-ng's
+        // Z_RLE path at equal-or-better size; non-x86 builds fall back to
+        // zlib-ng with the default strategy.
+        return EncodeOptions{1, Strategy::Default, FilterMode::Up, DEFAULT_IDAT_CHUNK_SIZE};
     case Preset::Balanced:
         return EncodeOptions{1, Strategy::Rle, FilterMode::AdaptiveFast, DEFAULT_IDAT_CHUNK_SIZE};
     case Preset::Small:

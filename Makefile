@@ -8,13 +8,14 @@
 #   make bench-bin      Benchmark CLI: gzip vs pigz vs pigzpp (requires hyperfine)
 #   make bench-py       Benchmark Python: gzip vs zlib-ng vs isal vs pigzpp
 #   make bench-png      Benchmark PNG encoding vs Pillow baseline
+#   make bench-report   Re-run report figures with raw JSON + median-of-7
 #   make bench          Run all benchmarks
 #   make install-py     Install pigzpp Python package (pip install)
 #   make clean          Remove build artifacts
 
 NPROC  ?= $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 SIZES  ?= 16 128 1024 8192
-ITERS  ?= 3
+ITERS  ?= 7
 THREADS ?= 1 4 8 16
 
 BUILD_DIR       := build
@@ -34,25 +35,19 @@ setup:
 .PHONY: build debug clean test test-cpp test-py
 
 build:
-	@mkdir -p $(BUILD_DIR)
-	@if [ ! -f $(BUILD_DIR)/CMakeCache.txt ]; then \
-		cd $(BUILD_DIR) && cmake .. \
-			-DCMAKE_BUILD_TYPE=Release \
-			-DPIGZPP_STATIC=ON \
-			-DPIGZPP_LTO=ON; \
-	fi
+	cmake -S . -B $(BUILD_DIR) \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DPIGZPP_STATIC=ON \
+		-DPIGZPP_LTO=ON
 	cmake --build $(BUILD_DIR) -j$(NPROC)
 	@echo "\n✓ Release build complete: $(PIGZPP_BIN)"
-	@ls -lh $(PIGZPP_BIN) $(BUILD_DIR)/pigzpp.cpython-*.so 2>/dev/null || true
+	@ls -lh $(PIGZPP_BIN) $(BUILD_DIR)/pigzpp.abi3.* 2>/dev/null || true
 
 debug:
-	@mkdir -p $(DEBUG_DIR)
-	@if [ ! -f $(DEBUG_DIR)/CMakeCache.txt ]; then \
-		cd $(DEBUG_DIR) && cmake .. \
-			-DCMAKE_BUILD_TYPE=Debug \
-			-DPIGZPP_STATIC=OFF \
-			-DPIGZPP_LTO=OFF; \
-	fi
+	cmake -S . -B $(DEBUG_DIR) \
+		-DCMAKE_BUILD_TYPE=Debug \
+		-DPIGZPP_STATIC=OFF \
+		-DPIGZPP_LTO=OFF
 	cmake --build $(DEBUG_DIR) -j$(NPROC)
 	@echo "\n✓ Debug build complete: $(DEBUG_DIR)/pigzpp"
 
@@ -67,15 +62,15 @@ test-cpp: build
 	cd $(BUILD_DIR) && ctest --output-on-failure -j$(NPROC)
 
 test-py: build
-	PYTHONPATH=$(CURDIR)/$(BUILD_DIR) python -m pytest tests/test_python.py tests/test_png.py -v
+	PYTHONPATH=$(CURDIR)/$(BUILD_DIR) python -m pytest tests/test_python.py tests/test_zip.py tests/test_png.py -v
 
 # ─── Benchmarks ───────────────────────────────────────────────────────────────
 
-.PHONY: bench-setup bench-bin bench-py bench-png bench
+.PHONY: bench-setup bench-bin bench-py bench-png bench-report-setup bench-report bench
 
 # Generate test data files and install Python benchmark dependencies
 bench-setup:
-	python3 benchmarks/gen_data.py --sizes $(SIZES) --data-dir $(BENCH_DATA_DIR)
+	python3 benchmarks/core/gen_data.py --sizes $(SIZES) --data-dir $(BENCH_DATA_DIR)
 	@echo "\nInstalling Python benchmark packages..."
 	pip install --quiet zlib-ng isal pytest 2>/dev/null || \
 		echo "Warning: some packages failed to install (optional)"
@@ -84,16 +79,29 @@ bench-setup:
 
 # Binary benchmark: gzip vs pigz vs pigzpp
 bench-bin: bench-setup
-	python benchmarks/bench_binary.py --sizes $(SIZES) --iterations $(ITERS) \
+	python benchmarks/core/bench_binary.py --sizes $(SIZES) --iterations $(ITERS) \
 		--threads $(THREADS) --pigzpp $(PIGZPP_BIN) --data-dir $(BENCH_DATA_DIR)
 
 # Python benchmark: gzip vs zlib-ng vs isal vs pigzpp
 bench-py: bench-setup
-	PYTHONPATH=$(CURDIR)/$(BUILD_DIR) python benchmarks/bench_python.py --sizes $(SIZES) --iterations $(ITERS)
+	PYTHONPATH=$(CURDIR)/$(BUILD_DIR) python benchmarks/python/bench_python.py --sizes $(SIZES) --iterations $(ITERS)
 
 # PNG benchmark: pigzpp.png and OpenCV against Pillow baseline
 bench-png: build
-	PYTHONPATH=$(CURDIR)/$(BUILD_DIR) python benchmarks/bench_png.py --verify --out $(BUILD_DIR)/png-bench
+	PYTHONPATH=$(CURDIR)/$(BUILD_DIR) python benchmarks/png/bench_png.py --verify --out $(BUILD_DIR)/png-bench
+
+# Complete technical-report benchmark protocol. Stores all timed samples and
+# metadata in JSON, derives report TSV files, then regenerates plots.
+bench-report-setup:
+	bash benchmarks/report/setup.sh
+
+bench-report: bench-report-setup
+	python3 benchmarks/report/run_report_benchmarks.py --samples 7 --only all
+	python3 benchmarks/report/validate_report_data.py \
+		benchmarks/results/$$(date -u +%F)/report-benchmarks.json
+	python3 benchmarks/report/generate_result_macros.py \
+		benchmarks/results/$$(date -u +%F)/report-benchmarks.json
+	$(MAKE) -C report plots
 
 # All benchmarks
 bench: bench-bin bench-py bench-png
@@ -115,7 +123,7 @@ PROFILE_DATA := $(BENCH_DATA_DIR)/$(PROFILE_SIZE)MB.txt
 profile: build
 	@mkdir -p $(BENCH_DATA_DIR)
 	@if [ ! -f $(PROFILE_DATA) ]; then \
-		python3 benchmarks/gen_data.py --sizes $(PROFILE_SIZE) --data-dir $(BENCH_DATA_DIR); \
+		python3 benchmarks/core/gen_data.py --sizes $(PROFILE_SIZE) --data-dir $(BENCH_DATA_DIR); \
 	fi
 	@echo "==> Profiling compression ($(PROFILE_SIZE) MB) ..."
 	perf record -g -o build/perf-compress.data -- $(PIGZPP_BIN) -c $(PROFILE_DATA) > /dev/null
