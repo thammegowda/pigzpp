@@ -69,6 +69,7 @@ jobs:
         run: |
           brew install llvm
           echo "LLVM_PREFIX=$(brew --prefix llvm)" >> "$GITHUB_ENV"
+          echo "CIBW_ENVIRONMENT=CC=$(brew --prefix llvm)/bin/clang CXX=$(brew --prefix llvm)/bin/clang++" >> "$GITHUB_ENV"
 
       - name: Install NASM on Windows x86_64
         if: matrix.target == 'windows-x86_64'

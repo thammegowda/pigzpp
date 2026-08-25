@@ -101,10 +101,16 @@ def pe_dependencies(path: Path) -> list[str]:
         ) from error
 
     image = pefile.PE(str(path), fast_load=True)
-    image.parse_data_directories(
-        directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"]]
-    )
-    return [entry.dll.decode("ascii", "replace") for entry in image.DIRECTORY_ENTRY_IMPORT]
+    try:
+        image.parse_data_directories(
+            directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"]]
+        )
+        return [
+            entry.dll.decode("ascii", "replace")
+            for entry in image.DIRECTORY_ENTRY_IMPORT
+        ]
+    finally:
+        image.close()
 
 
 def dependencies(path: Path, kind: str) -> list[str]:
