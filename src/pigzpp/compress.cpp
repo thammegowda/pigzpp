@@ -8,6 +8,7 @@
 #include "compress.h"
 #include "format.h"
 #include "io_utils.h"
+#include "platform.h"
 
 #include <algorithm>
 #include <atomic>
@@ -276,10 +277,10 @@ void Compressor::compress(int in_fd, int out_fd, MemIO* mem) {
         // per-block overhead (flush, dict set, reset).  But we need enough
         // blocks (>= 2 per thread) to keep all threads busy.
         if (use_isal(lvl, cfg_.engine) && !cfg_.rsync && cfg_.block == DEFAULT_BLOCK_SIZE) {
-            off_t fsize = mem ? static_cast<off_t>(mem->in_size)
-                              : lseek(in_fd, 0, SEEK_END);
+            int64_t fsize = mem ? static_cast<int64_t>(mem->in_size)
+                                 : platform::seek(in_fd, 0, SEEK_END);
             if (fsize > 0) {
-                if (!mem) lseek(in_fd, 0, SEEK_SET);
+                if (!mem) platform::seek(in_fd, 0, SEEK_SET);
                 // Target: each thread gets at least 4 blocks for good pipelining.
                 // Start with 2 MB, shrink if needed to ensure enough blocks.
                 size_t block = 2 * 1024 * 1024; // 2 MB ideal
@@ -300,9 +301,9 @@ void Compressor::compress(int in_fd, int out_fd, MemIO* mem) {
         // Skipped for the in-memory path: keeping procs > 1 guarantees the
         // mem-routed parallel_compress path is used (single_compress is fd-only).
         if (cfg_.procs > 1 && !mem) {
-            off_t fsize = lseek(in_fd, 0, SEEK_END);
+            int64_t fsize = platform::seek(in_fd, 0, SEEK_END);
             if (fsize > 0) {
-                lseek(in_fd, 0, SEEK_SET);
+                platform::seek(in_fd, 0, SEEK_SET);
                 int useful_threads = static_cast<int>(
                     static_cast<uint64_t>(fsize) / (cfg_.block * 2));
                 if (useful_threads < 1) useful_threads = 1;

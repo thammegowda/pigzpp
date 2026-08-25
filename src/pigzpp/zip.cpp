@@ -529,7 +529,7 @@ ZipWriter::ZipWriter(const std::string& path, char mode) : p_(std::make_unique<I
         }
         if (platform::seek(fd, static_cast<int64_t>(arc.cd_offset), SEEK_SET) < 0) {
             platform::close(fd);
-            throw std::runtime_error("zip: lseek failed: " + std::string(std::strerror(errno)));
+            throw std::runtime_error("zip: seek failed: " + std::string(std::strerror(errno)));
         }
         p_->owned_fd = fd;
         p_->sink.fd = fd;

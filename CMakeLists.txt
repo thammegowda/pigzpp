@@ -169,9 +169,9 @@ option(PIGZPP_USE_ISAL "Use ISA-L for compression/decompression engine" ON)
 if(APPLE AND PIGZPP_USE_ISAL)
     message(STATUS "Disabling ISA-L on macOS; using the portable zlib-ng backend")
     set(PIGZPP_USE_ISAL OFF CACHE BOOL "Use ISA-L for compression/decompression engine" FORCE)
-elseif(WIN32 AND PIGZPP_USE_ISAL AND
+elseif(PIGZPP_USE_ISAL AND
        NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
-    message(STATUS "Disabling ISA-L on non-x86 Windows; using the portable zlib-ng backend")
+    message(STATUS "Disabling ISA-L on non-x86 platforms; using the portable zlib-ng backend")
     set(PIGZPP_USE_ISAL OFF CACHE BOOL "Use ISA-L for compression/decompression engine" FORCE)
 endif()
 if(PIGZPP_USE_ISAL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/isa-l/CMakeLists.txt")

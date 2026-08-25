@@ -30,7 +30,7 @@
 namespace pigzpp::platform {
 
 #if defined(_WIN32)
-using FileStat = struct _stat64;
+using FileStat = ::_stat64;
 #else
 using FileStat = struct stat;
 #endif

@@ -26,26 +26,32 @@ jobs:
             runner: ubuntu-24.04
             os: linux
             wheel-arch: x86_64
+            use-isal: ON
           - target: linux-arm64
             runner: ubuntu-24.04-arm
             os: linux
             wheel-arch: aarch64
+            use-isal: OFF
           - target: macos-x86_64
             runner: macos-15-intel
             os: macos
             wheel-arch: x86_64
+            use-isal: OFF
           - target: macos-arm64
-            runner: macos-15
+            runner: macos-26
             os: macos
             wheel-arch: arm64
+            use-isal: OFF
           - target: windows-x86_64
             runner: windows-2025
             os: windows
             wheel-arch: AMD64
+            use-isal: ON
           - target: windows-arm64
             runner: windows-11-arm
             os: windows
             wheel-arch: ARM64
+            use-isal: OFF
 
     steps:
       - uses: actions/checkout@v4
@@ -56,6 +62,14 @@ jobs:
       - name: Install Linux build tools
         if: matrix.os == 'linux'
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build nasm
+
+      - name: Install modern LLVM on macOS
+        if: matrix.os == 'macos'
+        shell: bash
+        run: |
+          brew install llvm
+          echo "CC=$(brew --prefix llvm)/bin/clang" >> "$GITHUB_ENV"
+          echo "CXX=$(brew --prefix llvm)/bin/clang++" >> "$GITHUB_ENV"
 
       - name: Install NASM on Windows x86_64
         if: matrix.target == 'windows-x86_64'
@@ -74,6 +88,7 @@ jobs:
           -DPIGZPP_BUILD_BENCHMARKS=OFF
           -DPIGZPP_STATIC=ON
           -DPIGZPP_DISTRIBUTION_BUILD=ON
+          -DPIGZPP_USE_ISAL=${{ matrix.use-isal }}
           -DPIGZPP_LTO=ON
 
       - name: Configure native archive (Windows)
@@ -86,6 +101,7 @@ jobs:
           -DPIGZPP_BUILD_BENCHMARKS=OFF
           -DPIGZPP_STATIC=ON
           -DPIGZPP_DISTRIBUTION_BUILD=ON
+          -DPIGZPP_USE_ISAL=${{ matrix.use-isal }}
           -DPIGZPP_LTO=ON
 
       - name: Build native archive
@@ -94,7 +110,7 @@ jobs:
       - name: Verify native CLI (Unix)
         if: matrix.os != 'windows'
         run: |
-          build-dist/pigzpp --version | grep '1.1.0'
+          build-dist/pigzpp -V | grep '1.1.0'
           printf 'native archive smoke test\n%.0s' {1..1000} > input.txt
           build-dist/pigzpp -c input.txt > output.gz
           build-dist/pigzpp -dc output.gz > restored.txt
