@@ -28,6 +28,20 @@
 
 namespace nb = nanobind;
 
+static void normalize_newlines(std::string& data) {
+    size_t output = 0;
+    for (size_t input = 0; input < data.size(); ++input) {
+        if (data[input] == '\r') {
+            if (input + 1 < data.size() && data[input + 1] == '\n')
+                ++input;
+            data[output++] = '\n';
+        } else {
+            data[output++] = data[input];
+        }
+    }
+    data.resize(output);
+}
+
 // GzFile: streaming gzip file API using zlib's gz* functions.
 // Write mode: gzwrite() compresses and flushes incrementally — no buffering.
 // Read mode: gzread() decompresses on demand — no full-file load.
@@ -38,8 +52,10 @@ public:
         : filename_(std::move(filename)), level_(level) {
         if (mode == "r" || mode == "rt" || mode == "rb") {
             writing_ = false;
+            text_mode_ = mode != "rb";
         } else if (mode == "w" || mode == "wt" || mode == "wb") {
             writing_ = true;
+            text_mode_ = mode != "wb";
         } else {
             throw std::invalid_argument("mode must be 'r'/'rt'/'rb' or 'w'/'wt'/'wb'");
         }
@@ -79,6 +95,8 @@ public:
             if (n <= 0) break;
             result.append(buf, static_cast<size_t>(n));
         }
+        if (text_mode_)
+            normalize_newlines(result);
         return nb::str(result.data(), result.size());
     }
 
@@ -117,7 +135,10 @@ public:
         }
         size_t len = strlen(buf);
         if (len == 0) throw nb::stop_iteration();
-        return std::string(buf, len);
+        std::string result(buf, len);
+        if (text_mode_)
+            normalize_newlines(result);
+        return result;
     }
 
     ~GzFile() { exit(); }
@@ -126,6 +147,7 @@ private:
     std::string filename_;
     int level_;
     bool writing_ = false;
+    bool text_mode_ = true;
     gzFile gz_ = nullptr;
 };
 
