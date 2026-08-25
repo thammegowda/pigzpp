@@ -68,8 +68,7 @@ jobs:
         shell: bash
         run: |
           brew install llvm
-          echo "CC=$(brew --prefix llvm)/bin/clang" >> "$GITHUB_ENV"
-          echo "CXX=$(brew --prefix llvm)/bin/clang++" >> "$GITHUB_ENV"
+          echo "LLVM_PREFIX=$(brew --prefix llvm)" >> "$GITHUB_ENV"
 
       - name: Install NASM on Windows x86_64
         if: matrix.target == 'windows-x86_64'
@@ -82,6 +81,7 @@ jobs:
         if: matrix.os != 'windows'
         run: >-
           cmake -S . -B build-dist -G Ninja
+          ${{ matrix.os == 'macos' && format('-DCMAKE_C_COMPILER={0}/bin/clang -DCMAKE_CXX_COMPILER={0}/bin/clang++', env.LLVM_PREFIX) || '' }}
           -DCMAKE_BUILD_TYPE=Release
           -DPIGZPP_BUILD_PYTHON=OFF
           -DPIGZPP_BUILD_TESTS=OFF
