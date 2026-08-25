@@ -8,7 +8,7 @@ Measured on an Intel Xeon W-2235 (128 MB text, level 6); see [Performance](#perf
 
 | You want to… | pigzpp gives you |
 |---|---|
-| Compress on the **command line** | Up to **8.5× faster than `pigz`**, **68× faster than `gzip`** — or preserve the zlib-class ratio and still be **2.1× faster than `pigz`** |
+| Compress on the **command line** | Up to **8.5× faster than `pigz`**, **66× faster than `gzip`** — or preserve the zlib-class ratio and still be **2.1× faster than `pigz`** |
 | Compress from **Python** | Up to **50× faster than the standard-library `gzip`** — and the fastest option tested in Go, Rust, and JavaScript/WASM too |
 | Speed up **OCI layer compression** | Compress a real image layer via a cgo owned buffer **11× faster than Go's stdlib gzip at the same ratio** (or **42×** with ISA-L) |
 | Build/read **ZIP archives** | `pigzpp.ZipFile` (a `zipfile` drop-in) writes **12–28× faster than Python's `zipfile`**; in the browser it reads `.docx`/`.xlsx`/`.zip` faster than fflate & JSZip |
@@ -19,6 +19,8 @@ Measured on an Intel Xeon W-2235 (128 MB text, level 6); see [Performance](#perf
 > **Note:** This project is an experiment in AI-assisted software modernization. The goal was to study how capable coding agents are at rewriting real-world tools — not to take credit away from the original authors. pigz is the work of [Mark Adler](https://en.wikipedia.org/wiki/Mark_Adler), co-creator of zlib, gzip, and the DEFLATE format, who invested countless hours building and maintaining it. pigzpp exists because of that foundation.
 >
 > Read the full writeup: **[I Let Two AI Agents Race to Modernize pigz](https://gowda.ai/posts/2026/03/pigzpp-with-agents/)**
+>
+> Read the full report: **[pigzpp technical report](report/pigzpp-report.pdf)**
 
 ## What's inside
 

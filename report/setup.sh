@@ -11,76 +11,7 @@ log() {
 # we must verify execution, not just presence.
 tectonic_works() { command -v "$1" >/dev/null 2>&1 && "$1" --version >/dev/null 2>&1; }
 
-# ---------------------------------------------------------------------------
-# Fonts (fetched first, since the Tectonic checks below may exit early)
-# main.tex loads its fonts by relative path from ./fonts/ (via fontspec), which
-# keeps the build fully reproducible and free of system font-path warnings.
-# The OTF files are not committed to git; we fetch them here if missing.
-#   - Libertinus (OFL) : serif/sans/math body text
-#   - Inconsolata (OFL): monospace for code/paths
-# ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FONTS_DIR="${SCRIPT_DIR}/fonts"
-LIBERTINUS_VERSION="7.051"
-INCONSOLATA_RAW="https://github.com/googlefonts/Inconsolata/raw/main/fonts/otf"
-REQUIRED_FONTS=(
-    LibertinusSerif-Regular.otf LibertinusSerif-Bold.otf
-    LibertinusSerif-Italic.otf  LibertinusSerif-BoldItalic.otf
-    LibertinusSans-Regular.otf  LibertinusSans-Bold.otf LibertinusSans-Italic.otf
-    LibertinusMath-Regular.otf
-    Inconsolata-Regular.otf Inconsolata-Bold.otf
-)
-
-fonts_present() {
-    for f in "${REQUIRED_FONTS[@]}"; do
-        [ -f "${FONTS_DIR}/${f}" ] || return 1
-    done
-    return 0
-}
-
-ensure_fonts() {
-    if fonts_present; then
-        log "All required fonts already present in ${FONTS_DIR}."
-        return 0
-    fi
-    log "Fetching fonts into ${FONTS_DIR} ..."
-    mkdir -p "${FONTS_DIR}"
-
-    # Libertinus: download the release archive once and copy the OTF faces.
-    if ! ls "${FONTS_DIR}"/Libertinus*.otf >/dev/null 2>&1; then
-        tmp="$(mktemp -d)"
-        lib_url="https://github.com/alerque/libertinus/releases/download/v${LIBERTINUS_VERSION}/Libertinus-${LIBERTINUS_VERSION}.zip"
-        log "Downloading Libertinus ${LIBERTINUS_VERSION} ..."
-        if curl -fsSL -o "${tmp}/lib.zip" "${lib_url}" && unzip -o -q "${tmp}/lib.zip" -d "${tmp}"; then
-            for face in LibertinusSerif-Regular LibertinusSerif-Bold LibertinusSerif-Italic \
-                        LibertinusSerif-BoldItalic LibertinusSans-Regular LibertinusSans-Bold \
-                        LibertinusSans-Italic LibertinusMath-Regular; do
-                found="$(find "${tmp}" -iname "${face}.otf" | head -n1)"
-                [ -n "${found}" ] && cp "${found}" "${FONTS_DIR}/"
-            done
-        else
-            log "ERROR: failed to download Libertinus from ${lib_url}"; rm -rf "${tmp}"; exit 1
-        fi
-        rm -rf "${tmp}"
-    fi
-
-    # Inconsolata: fetch the two OTF faces directly.
-    for f in Inconsolata-Regular.otf Inconsolata-Bold.otf; do
-        if [ ! -f "${FONTS_DIR}/${f}" ]; then
-            log "Downloading ${f} ..."
-            curl -fsSL -o "${FONTS_DIR}/${f}" "${INCONSOLATA_RAW}/${f}" \
-                || { log "ERROR: failed to download ${f}"; exit 1; }
-        fi
-    done
-
-    if fonts_present; then
-        log "Fonts ready in ${FONTS_DIR}."
-    else
-        log "ERROR: some required fonts are still missing in ${FONTS_DIR}."; exit 1
-    fi
-}
-
-ensure_fonts
 
 # ACL natbib bibliography style (used by \bibliographystyle{acl_natbib}); not
 # committed to git, fetched here if missing.

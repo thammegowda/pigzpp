@@ -21,27 +21,14 @@
 \setlength{\columnsep}{0.62cm}
 
 % ---------------------------------------------------------------------------
-% Type: Libertinus serif/sans/math + Inconsolata mono, shipped in ./fonts/
+% Type: pdfLaTeX-safe serif/sans/math + Inconsolata mono.  Keep the source
+% upload independent of external font files.
 % ---------------------------------------------------------------------------
 \RequirePackage[T1]{fontenc}
-\RequirePackage{fontspec}
-\RequirePackage{unicode-math}
-\defaultfontfeatures{Ligatures=TeX}
-\setmainfont{LibertinusSerif-Regular.otf}[
-  Path            = fonts/,
-  BoldFont        = LibertinusSerif-Bold.otf,
-  ItalicFont      = LibertinusSerif-Italic.otf,
-  BoldItalicFont  = LibertinusSerif-BoldItalic.otf]
-\setsansfont{LibertinusSans-Regular.otf}[
-  Path            = fonts/,
-  BoldFont        = LibertinusSans-Bold.otf,
-  ItalicFont      = LibertinusSans-Italic.otf,
-  Scale           = MatchLowercase]
-\setmonofont{Inconsolata-Regular.otf}[
-  Path            = fonts/,
-  BoldFont        = Inconsolata-Bold.otf,
-  Scale           = MatchLowercase]
-\setmathfont{LibertinusMath-Regular.otf}[Path=fonts/]
+\RequirePackage{newtxtext}
+\RequirePackage{newtxmath}
+\RequirePackage[scaled=0.92]{helvet}
+\RequirePackage{inconsolata}
 \RequirePackage[protrusion=true,expansion=false]{microtype}
 
 % ---------------------------------------------------------------------------

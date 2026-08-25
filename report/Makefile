@@ -24,8 +24,8 @@ PLOT_FILES     := plots/cli.pdf \
 # The recipe below probes candidates and uses the first that actually executes.
 pdf: $(MAIN)
 	@mkdir -p build; \
-	if [ ! -f fonts/LibertinusSerif-Regular.otf ] || [ ! -f acl_natbib.bst ]; then \
-	  echo "==> Fonts or bib style missing; fetching via setup.sh"; ./setup.sh >&2; \
+	if [ ! -f acl_natbib.bst ]; then \
+	  echo "==> Bibliography style missing; fetching via setup.sh"; ./setup.sh >&2; \
 	fi; \
 	missing_plot=; for p in $(PLOT_FILES); do \
 	  if [ ! -f "$$p" ]; then missing_plot=1; break; fi; \
