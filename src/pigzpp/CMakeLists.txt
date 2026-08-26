@@ -11,7 +11,10 @@ set(PIGZPP_LIB_SOURCES
 )
 
 add_library(pigzpp_lib STATIC ${PIGZPP_LIB_SOURCES})
-target_include_directories(pigzpp_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_features(pigzpp_lib PUBLIC cxx_std_23)
+target_include_directories(pigzpp_lib PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..>)
 target_link_libraries(pigzpp_lib PUBLIC zlib_target zopfli)
 if(NOT EMSCRIPTEN)
     # Under Emscripten pthreads come from -pthread (added globally), not this target.
@@ -28,16 +31,18 @@ endif()
 target_compile_options(pigzpp_lib PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic;-Wcast-qual>
     $<$<AND:$<CONFIG:Release>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>>:-O3;-DNDEBUG;-funroll-loops;-fomit-frame-pointer;-falign-functions=32;-falign-loops=32>
-    $<$<AND:$<CONFIG:Debug>,$<CXX_COMPILER_ID:GNU,Clang>>:-g;-fsanitize=address,undefined>
     $<$<CXX_COMPILER_ID:MSVC>:/W4;/permissive->
     $<$<AND:$<CONFIG:Release>,$<CXX_COMPILER_ID:MSVC>>:/O2;/DNDEBUG>
 )
-target_link_options(pigzpp_lib PUBLIC
-    $<$<AND:$<CONFIG:Debug>,$<CXX_COMPILER_ID:GNU,Clang>>:-fsanitize=address,undefined>
-)
+if(PIGZPP_TOP_LEVEL)
+    target_compile_options(pigzpp_lib PRIVATE
+        $<$<AND:$<CONFIG:Debug>,$<CXX_COMPILER_ID:GNU,Clang>>:-g;-fsanitize=address,undefined>)
+    target_link_options(pigzpp_lib PUBLIC
+        $<$<AND:$<CONFIG:Debug>,$<CXX_COMPILER_ID:GNU,Clang>>:-fsanitize=address,undefined>)
+endif()
 
 # CLI executable (native only — the WASM build ships the Embind module instead).
-if(NOT EMSCRIPTEN)
+if(PIGZPP_BUILD_CLI AND NOT EMSCRIPTEN)
 add_executable(pigzpp_exe main.cpp)
 set_target_properties(pigzpp_exe PROPERTIES
     OUTPUT_NAME pigzpp

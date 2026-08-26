@@ -516,7 +516,6 @@ void Compressor::single_compress(int in_fd, int out_fd) {
     if (ret != Z_OK)
         throw std::runtime_error("deflateInit2 failed");
 
-    unsigned out_size = cfg_.block > MAXP2 ? MAXP2 : static_cast<unsigned>(cfg_.block);
     std::vector<unsigned char> in(cfg_.block + DICT_SIZE);
     std::vector<unsigned char> next_buf(cfg_.block + DICT_SIZE);
 

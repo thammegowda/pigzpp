@@ -1,22 +1,25 @@
 cmake_minimum_required(VERSION 3.20 FATAL_ERROR)
 project(pigzpp VERSION 1.1.0 LANGUAGES CXX C)
 
-set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+    set(PIGZPP_TOP_LEVEL ON)
+else()
+    set(PIGZPP_TOP_LEVEL OFF)
+endif()
 
-if(NOT CMAKE_BUILD_TYPE)
+if(PIGZPP_TOP_LEVEL AND NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
     message(STATUS "No build type selected, default to Release")
 endif()
 
 # --- Build options ---
 option(PIGZPP_USE_ZLIB_NG "Use zlib-ng instead of system zlib (hardware-accelerated CRC)" ON)
-option(PIGZPP_STATIC "Build fully static binary" ON)
+option(PIGZPP_BUILD_CLI "Build the pigzpp command-line executable" ${PIGZPP_TOP_LEVEL})
+option(PIGZPP_INSTALL "Install and package pigzpp" ${PIGZPP_TOP_LEVEL})
+option(PIGZPP_STATIC "Build fully static binary" ${PIGZPP_TOP_LEVEL})
 option(PIGZPP_DISTRIBUTION_BUILD "Require self-contained distribution dependencies" OFF)
 option(PIGZPP_NATIVE "Use -march=native for CPU-specific optimizations (not portable)" OFF)
-option(PIGZPP_LTO "Enable Link-Time Optimization" ON)
+option(PIGZPP_LTO "Enable Link-Time Optimization" ${PIGZPP_TOP_LEVEL})
 option(PIGZPP_WASM_SIMD "Enable WASM 128-bit SIMD (Emscripten builds only)" ON)
 option(PIGZPP_WASM_THREADS "Enable WASM threads/pthreads (Emscripten builds only)" OFF)
 
@@ -70,7 +73,7 @@ if(EMSCRIPTEN)
 elseif(PIGZPP_NATIVE AND CMAKE_BUILD_TYPE STREQUAL "Release" AND PIGZPP_GNU_LIKE)
     add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-march=native>)
     message(STATUS "Using -march=native (NOT PORTABLE — binary requires this CPU or newer)")
-else()
+elseif(PIGZPP_TOP_LEVEL)
     if(PIGZPP_GNU_LIKE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
         add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-mtune=generic>)
     endif()
@@ -98,26 +101,39 @@ if(NOT EMSCRIPTEN)
 endif()
 find_library(MATH_LIBRARY m)
 
-# All third-party libraries are built as static archives.
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
+# Standalone distributions use static third-party archives. Embedded builds
+# must not overwrite the parent project's shared-library policy.
+if(PIGZPP_TOP_LEVEL OR PIGZPP_DISTRIBUTION_BUILD)
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
+endif()
 
 # zlib: prefer zlib-ng, built as part of the project
 if(PIGZPP_USE_ZLIB_NG AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-ng/CMakeLists.txt")
     message(STATUS "Building zlib-ng (hardware-accelerated) from third_party/zlib-ng")
-    set(ZLIB_COMPAT ON CACHE BOOL "zlib-ng: zlib-compatible API" FORCE)
-    set(ZLIB_ENABLE_TESTS OFF CACHE BOOL "zlib-ng: disable tests" FORCE)
-    set(ZLIBNG_ENABLE_TESTS OFF CACHE BOOL "zlib-ng: disable tests" FORCE)
-    set(WITH_GTEST OFF CACHE BOOL "zlib-ng: disable gtest" FORCE)
-    set(WITH_BENCHMARKS OFF CACHE BOOL "zlib-ng: disable benchmarks" FORCE)
-    set(WITH_NEW_STRATEGIES ON CACHE BOOL "zlib-ng: new strategies" FORCE)
+    get_property(_pigzpp_benchmarks_type CACHE WITH_BENCHMARKS PROPERTY TYPE)
+    if(_pigzpp_benchmarks_type)
+        get_property(_pigzpp_benchmarks_help CACHE WITH_BENCHMARKS PROPERTY HELPSTRING)
+        set(_pigzpp_benchmarks_value "${WITH_BENCHMARKS}")
+    endif()
+    set(ZLIB_COMPAT ON)
+    set(ZLIB_ENABLE_TESTS OFF)
+    set(ZLIBNG_ENABLE_TESTS OFF)
+    set(WITH_GTEST OFF)
+    set(WITH_BENCHMARKS OFF)
+    set(WITH_NEW_STRATEGIES ON)
+    set(BUILD_SHARED_LIBS OFF)
     if(EMSCRIPTEN)
         # wasm has no optimized arch; the runtime CPU-dispatch functable only adds
         # indirection and generates dispatch stubs that break under wasm's strict
         # call-signature validation. Call the generic C implementations directly.
-        set(WITH_RUNTIME_CPU_DETECTION OFF CACHE BOOL "zlib-ng: no CPU dispatch on wasm" FORCE)
+        set(WITH_RUNTIME_CPU_DETECTION OFF)
     endif()
     set(CMAKE_POSITION_INDEPENDENT_CODE ON)
     add_subdirectory(third_party/zlib-ng EXCLUDE_FROM_ALL)
+    if(_pigzpp_benchmarks_type)
+        set(WITH_BENCHMARKS "${_pigzpp_benchmarks_value}" CACHE
+            "${_pigzpp_benchmarks_type}" "${_pigzpp_benchmarks_help}" FORCE)
+    endif()
     # With BUILD_SHARED_LIBS=OFF and ZLIB_COMPAT, zlib-ng creates the real
     # target as "zlib-ng" (static) and aliases zlibstatic/zlib-ng-static to it.
     # We need the real (non-alias) target to set properties on.
@@ -149,7 +165,8 @@ set(ZOPFLI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zopfli/src/zopfli")
 file(GLOB ZOPFLI_SOURCES "${ZOPFLI_DIR}/*.c")
 list(FILTER ZOPFLI_SOURCES EXCLUDE REGEX "zopfli_bin\\.c$")
 add_library(zopfli STATIC ${ZOPFLI_SOURCES})
-target_include_directories(zopfli PUBLIC ${ZOPFLI_DIR})
+target_include_directories(zopfli PUBLIC
+    $<BUILD_INTERFACE:${ZOPFLI_DIR}>)
 set_target_properties(zopfli PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(PIGZPP_DISTRIBUTION_BUILD)
     get_target_property(PIGZPP_ZOPFLI_TARGET_TYPE zopfli TYPE)
@@ -203,27 +220,27 @@ if(EMSCRIPTEN)
 endif()
 
 # Python bindings
-option(PIGZPP_BUILD_PYTHON "Build Python bindings" ON)
+option(PIGZPP_BUILD_PYTHON "Build Python bindings" ${PIGZPP_TOP_LEVEL})
 if(PIGZPP_BUILD_PYTHON)
     add_subdirectory(src/python)
 endif()
 
 # Testing
-option(PIGZPP_BUILD_TESTS "Build tests" ON)
+option(PIGZPP_BUILD_TESTS "Build tests" ${PIGZPP_TOP_LEVEL})
 if(PIGZPP_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()
 
 # Benchmarks
-option(PIGZPP_BUILD_BENCHMARKS "Build benchmarks" ON)
+option(PIGZPP_BUILD_BENCHMARKS "Build benchmarks" ${PIGZPP_TOP_LEVEL})
 if(PIGZPP_BUILD_BENCHMARKS)
     add_subdirectory(benchmarks/core)
 endif()
 
 # Native release archives. Python wheel builds install only the extension and
 # deliberately skip the CLI/docs package payload.
-if(NOT SKBUILD AND NOT EMSCRIPTEN)
+if(PIGZPP_INSTALL AND NOT SKBUILD AND NOT EMSCRIPTEN)
     install(FILES LICENSE README.md DESTINATION .)
 
     string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" PIGZPP_PACKAGE_PROCESSOR)
