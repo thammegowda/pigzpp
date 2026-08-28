@@ -425,6 +425,22 @@ pigzpp/
 └── notes/                Development notes and blog post
 ```
 
+## Citation
+
+[https://arxiv.org/abs/2608.24153](https://arxiv.org/abs/2608.24153)
+
+```bibtex
+@misc{gowda2026pigzppfastparallelportable,
+      title={pigzpp: Fast, Parallel, Portable Compression for the Whole Stack}, 
+      author={Thamme Gowda},
+      year={2026},
+      eprint={2608.24153},
+      archivePrefix={arXiv},
+      primaryClass={cs.DC},
+      url={https://arxiv.org/abs/2608.24153}, 
+}
+```
+
 ## Credits
 
 pigzpp is a rewrite of [pigz](https://zlib.net/pigz/) by **Mark Adler** (co-creator of zlib, gzip, and the DEFLATE format). The original pigz is licensed under the [zlib license](https://zlib.net/zlib_license.html).
@@ -446,3 +462,5 @@ pigzpp uses the same [zlib license](LICENSE) as the original pigz.
 ## License
 
 [zlib license](LICENSE) — same as the original pigz. Free for any use including commercial.
+
+
