@@ -284,3 +284,31 @@ jobs:
           generate_release_notes: true
           files: |
             dist/**/*
+
+  pypi:
+    name: Publish Python wheels to PyPI
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: manifest
+    runs-on: ubuntu-24.04
+    environment:
+      name: pypi
+      url: https://pypi.org/p/pigzpp
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+      - name: Verify wheel set
+        run: |
+          wheel_count=$(find dist -maxdepth 1 -type f -name '*.whl' | wc -l)
+          test "$wheel_count" -eq 6 || {
+            echo "expected 6 wheels, found $wheel_count" >&2
+            exit 1
+          }
+      - name: Publish wheels
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

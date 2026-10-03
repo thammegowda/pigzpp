@@ -146,19 +146,27 @@ Benchmarks live under `benchmarks/` (`core`, `python`, `png`, `go-docker`, `rust
 
 ## Prebuilt releases
 
-Tagged releases publish artifacts to [GitHub Releases](https://github.com/thammegowda/pigzpp/releases):
+Tagged releases publish artifacts to [GitHub Releases](https://github.com/thammegowda/pigzpp/releases), and publish the Python wheels to [PyPI](https://pypi.org/project/pigzpp/):
 
 - One `cp312-abi3` Python wheel for each of Linux, macOS, and Windows on x86_64 and ARM64. Each wheel works with regular CPython 3.12 and newer on that same OS and architecture.
 - A native `pigzpp` CLI archive for each of those six OS/architecture targets.
 - WebAssembly archives for `baseline`, `simd`, and `threads` variants.
 
+Install the wheel for the current platform with:
+
+```bash
+python -m pip install pigzpp
+```
+
 The stable ABI removes the need for separate wheels for CPython 3.12, 3.13, 3.14, and later releases. Free-threaded CPython uses a different ABI and is not currently included. Linux wheels target manylinux/glibc; Alpine/musl wheels are not currently produced.
 
-ISA-L is enabled on supported x86-64 builds. ARM64 artifacts use zlib-ng, which still provides runtime SIMD acceleration. Releases are attached to GitHub only; they are not automatically published to PyPI or npm.
+ISA-L is enabled on supported x86-64 builds. ARM64 artifacts use zlib-ng, which still provides runtime SIMD acceleration. WebAssembly archives are attached to GitHub only; they are not automatically published to npm.
 
 All release artifacts embed zlib-ng, ISA-L (when enabled), Zopfli, and nanobind statically; they never require those libraries to be installed at runtime. Linux CLI archives are fully static. Windows CLI archives and wheels use the static MSVC runtime. Linux wheels also embed the GNU C++ and GCC runtimes. Python itself and operating-system libraries remain dynamic by design; macOS does not support fully static executables and uses the system `libc++`/`libSystem` supplied by every supported macOS release. CI inspects each final archive and repaired wheel and rejects dynamic zlib-ng or ISA-L dependencies.
 
 Every release includes `DIST_SIZES.md` and `dist-sizes.json`, reporting the exact byte size and human-readable binary size of all six native archives, six wheels, and three WebAssembly packages, together with per-category and overall totals. The same table is written to the distribution workflow summary.
+
+PyPI publication uses trusted publishing and runs only for version tags after all release artifacts pass validation. Before the first release, configure a pending publisher for the `pigzpp` PyPI project with owner `thammegowda`, repository `pigzpp`, workflow `distribute.yml`, and environment `pypi`.
 
 ## Build
 
@@ -462,5 +470,4 @@ pigzpp uses the same [zlib license](LICENSE) as the original pigz.
 ## License
 
 [zlib license](LICENSE) — same as the original pigz. Free for any use including commercial.
-
 
