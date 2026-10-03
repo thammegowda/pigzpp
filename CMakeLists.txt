@@ -116,7 +116,6 @@ if(PIGZPP_USE_ZLIB_NG AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-n
         set(_pigzpp_benchmarks_value "${WITH_BENCHMARKS}")
     endif()
     set(ZLIB_COMPAT ON)
-    set(ZLIB_ENABLE_TESTS OFF)
     set(ZLIBNG_ENABLE_TESTS OFF)
     set(WITH_GTEST OFF)
     set(WITH_BENCHMARKS OFF)
