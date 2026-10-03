@@ -168,6 +168,8 @@ Every release includes `DIST_SIZES.md` and `dist-sizes.json`, reporting the exac
 
 PyPI publication uses trusted publishing and runs only for version tags after all release artifacts pass validation. Before the first release, configure a pending publisher for the `pigzpp` PyPI project with owner `thammegowda`, repository `pigzpp`, workflow `distribute.yml`, and environment `pypi`.
 
+`VERSION.txt` is the release version source of truth. CMake, Python packaging, and distribution workflows read it directly; run `python3 scripts/sync_version.py` after changing it to refresh Cargo metadata.
+
 ## Build
 
 Requires CMake 3.20+, a C++23 compiler (GCC 13+, Clang 17+, or a recent MSVC), and Python 3.12+ (for the Python module). The optional bindings each need their own toolchain: **Emscripten** (WebAssembly), **Go 1.22+** (cgo), or **Rust 1.75+** (FFI) — see [Building the language bindings](#building-the-language-bindings).
@@ -470,4 +472,3 @@ pigzpp uses the same [zlib license](LICENSE) as the original pigz.
 ## License
 
 [zlib license](LICENSE) — same as the original pigz. Free for any use including commercial.
-

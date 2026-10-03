@@ -15,8 +15,28 @@ permissions:
   contents: read
 
 jobs:
+  validate:
+    name: Validate release version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Validate version metadata and tag
+        run: |
+          python3 scripts/sync_version.py --check
+          version=$(cat VERSION.txt)
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag_version=${GITHUB_REF_NAME#v}
+            test "$version" = "$tag_version" || {
+              echo "tag $tag_version does not match project $version" >&2
+              exit 1
+            }
+          fi
+
   native:
     name: ${{ matrix.target }}
+    needs: validate
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -54,7 +74,7 @@ jobs:
             use-isal: OFF
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
           persist-credentials: false
@@ -111,7 +131,8 @@ jobs:
       - name: Verify native CLI (Unix)
         if: matrix.os != 'windows'
         run: |
-          build-dist/pigzpp -V | grep '1.1.0'
+          version=$(cat VERSION.txt)
+          build-dist/pigzpp -V | grep -F "$version"
           printf 'native archive smoke test\n%.0s' {1..1000} > input.txt
           build-dist/pigzpp -c input.txt > output.gz
           build-dist/pigzpp -dc output.gz > restored.txt
@@ -123,8 +144,9 @@ jobs:
         run: |
           $exe = Get-ChildItem build-dist -Recurse -Filter pigzpp.exe | Select-Object -First 1
           if (-not $exe) { throw "pigzpp.exe was not built" }
+          $expectedVersion = (Get-Content VERSION.txt -Raw).Trim()
           $version = & $exe.FullName --version
-          if ($version -notmatch "1\.1\.0") { throw "unexpected version: $version" }
+          if ($version -notmatch [regex]::Escape($expectedVersion)) { throw "unexpected version: $version" }
 
       - name: Install Windows dependency inspector
         if: matrix.os == 'windows'
@@ -143,7 +165,7 @@ jobs:
         run: python scripts/check_dist_dependencies.py --static-windows-crt 'build-dist/pigzpp-*.zip'
 
       - name: Upload native archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: native-${{ matrix.target }}
           path: |
@@ -152,7 +174,7 @@ jobs:
           if-no-files-found: error
 
       - name: Build and test CPython 3.12 ABI3 wheel
-        uses: pypa/cibuildwheel@v4.1.0
+        uses: pypa/cibuildwheel@v4.2.1
         env:
           CIBW_ARCHS: ${{ matrix.wheel-arch }}
         with:
@@ -165,7 +187,7 @@ jobs:
           'wheelhouse/*.whl'
 
       - name: Upload ABI3 wheel
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wheel-${{ matrix.target }}
           path: wheelhouse/*.whl
@@ -173,18 +195,19 @@ jobs:
 
   wasm:
     name: WebAssembly variants
+    needs: validate
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
           persist-credentials: false
-      - uses: mymindstorm/setup-emsdk@v14
+      - uses: mymindstorm/setup-emsdk@v16
         with:
           version: latest
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "24"
       - name: Build and test all variants
         run: |
           scripts/build_wasm.sh all
@@ -194,7 +217,7 @@ jobs:
       - name: Create WebAssembly archives
         run: |
           mkdir -p wasm-dist
-          version=$(sed -n 's/^project(pigzpp VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)
+          version=$(cat VERSION.txt)
           for variant in baseline simd threads; do
             staging="pigzpp-wasm-${version}-${variant}"
             mkdir -p "$staging"
@@ -202,7 +225,7 @@ jobs:
             cp LICENSE "$staging/"
             tar -czf "wasm-dist/${staging}.tar.gz" "$staging"
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wasm
           path: wasm-dist/*.tar.gz
@@ -215,28 +238,12 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
-
-      - name: Validate version tag
-        run: |
-          project_version=$(sed -n 's/^project(pigzpp VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)
-          python_version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml | head -1)
-          test "$project_version" = "$python_version" || {
-            echo "CMake version $project_version does not match Python version $python_version" >&2
-            exit 1
-          }
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            tag_version=${GITHUB_REF_NAME#v}
-            test "$project_version" = "$tag_version" || {
-              echo "tag $tag_version does not match project $project_version" >&2
-              exit 1
-            }
-          fi
 
       - name: Validate artifacts and create checksums
         run: |
@@ -253,12 +260,12 @@ jobs:
             hash=$(sha256sum "$file" | cut -d' ' -f1)
             printf '%s  %s\n' "$hash" "$(basename "$file")" >> SHA256SUMS
           done < <(find dist -type f -print0 | sort -z)
-          version=$(sed -n 's/^project(pigzpp VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)
+          version=$(cat VERSION.txt)
           total_size=$(python3 -c 'import json; print(json.load(open("dist-sizes.json"))["total_size_bytes"])')
           printf '{"version":"%s","wheels":%s,"native_archives":%s,"wasm_archives":%s,"total_size_bytes":%s}\n' \
             "$version" "$wheel_count" "$native_count" "$wasm_count" "$total_size" > manifest.json
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-manifest
           path: |
@@ -275,11 +282,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
           files: |
@@ -296,7 +303,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: wheel-*
           path: dist
