@@ -11,6 +11,9 @@ requires-python = ">=3.12"
 dependencies = ["numpy>=1.21"]
 license = "Zlib"
 
+[project.scripts]
+pigzpp = "pigzpp.__main__:main"
+
 [project.urls]
 Homepage = "https://github.com/thammegowda/pigzpp"
 Repository = "https://github.com/thammegowda/pigzpp"
@@ -31,7 +34,7 @@ cmake.args = [
     "-DPIGZPP_STATIC=OFF",
     "-DPIGZPP_DISTRIBUTION_BUILD=ON",
 ]
-wheel.packages = []  # no pure-Python packages; the .so is installed directly
+wheel.packages = ["src/python/pigzpp"]
 wheel.py-api = "cp312"
 
 [tool.cibuildwheel]
@@ -39,7 +42,7 @@ build = "cp312-*"
 skip = ["*-musllinux_*", "*-win32", "*-manylinux_i686"]
 build-verbosity = 1
 test-requires = ["pytest", "numpy", "pillow"]
-test-command = "python -m pytest {project}/tests/test_python.py {project}/tests/test_zip.py {project}/tests/test_png.py -v"
+test-command = "python -m pytest {project}/tests/test_python.py {project}/tests/test_python_cli.py {project}/tests/test_zip.py {project}/tests/test_png.py -v"
 
 [tool.cibuildwheel.linux]
 archs = ["native"]

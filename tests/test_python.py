@@ -1,6 +1,7 @@
 """Tests for pigzpp Python bindings."""
 
 import gzip
+import importlib
 import os
 import tempfile
 import zlib
@@ -8,6 +9,11 @@ import zlib
 import pytest
 
 import pigzpp
+
+
+def test_version_and_png_submodule():
+    assert pigzpp.__version__
+    assert importlib.import_module("pigzpp.png") is pigzpp.png
 
 
 class TestCompressDecompress:

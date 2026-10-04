@@ -158,6 +158,13 @@ Install the wheel for the current platform with:
 python -m pip install pigzpp
 ```
 
+The wheel includes the full native command-line interface:
+
+```bash
+pigzpp --help
+python -m pigzpp --help
+```
+
 The stable ABI removes the need for separate wheels for CPython 3.12, 3.13, 3.14, and later releases. Free-threaded CPython uses a different ABI and is not currently included. Linux wheels target manylinux/glibc; Alpine/musl wheels are not currently produced.
 
 ISA-L is enabled on supported x86-64 builds. ARM64 artifacts use zlib-ng, which still provides runtime SIMD acceleration. WebAssembly archives are attached to GitHub only; they are not automatically published to npm.
@@ -187,7 +194,7 @@ git submodule update --init --recursive
 
 This produces:
 - `build/pigzpp` — CLI binary (drop-in replacement for pigz)
-- `build/pigzpp.abi3.so` — Python module for regular CPython 3.12+
+- `build/python/pigzpp/_pigzpp.abi3.so` — Python native module for regular CPython 3.12+
 
 Other useful targets:
 
@@ -203,7 +210,7 @@ make clean          # Remove build artifacts
 
 ### Building the language bindings
 
-`make build` produces the CLI (and a Python module you can import from `build/` via `PYTHONPATH`). To install the Python package properly, or to build the WebAssembly / C-ABI surfaces, use the steps below.
+`make build` produces the CLI (and a Python package you can import from `build/python/` via `PYTHONPATH`). To install the Python package properly, or to build the WebAssembly / C-ABI surfaces, use the steps below.
 
 **Python** (nanobind, CPython stable ABI) — install the `pigzpp` module into a regular CPython 3.12+ environment:
 

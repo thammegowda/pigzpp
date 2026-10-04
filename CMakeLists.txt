@@ -253,8 +253,8 @@ if(PIGZPP_BUILD_BENCHMARKS)
     add_subdirectory(benchmarks/core)
 endif()
 
-# Native release archives. Python wheel builds install only the extension and
-# deliberately skip the CLI/docs package payload.
+# Native release archives. Python wheel builds install only the Python package
+# and deliberately skip the native archive's CLI/docs payload.
 if(PIGZPP_INSTALL AND NOT SKBUILD AND NOT EMSCRIPTEN)
     install(FILES LICENSE README.md DESTINATION .)
 

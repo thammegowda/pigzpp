@@ -8,6 +8,7 @@
 #include <nanobind/stl/vector.h>
 
 #include "compress.h"
+#include "cli.h"
 #include "config.h"
 #include "png.h"
 #include "zip.h"
@@ -27,6 +28,18 @@
 #include <vector>
 
 namespace nb = nanobind;
+
+#ifndef PIGZPP_VERSION
+#define PIGZPP_VERSION "unknown"
+#endif
+
+static int run_cli(std::vector<std::string> arguments) {
+    std::vector<char*> argv;
+    argv.reserve(arguments.size());
+    for (std::string& argument : arguments)
+        argv.push_back(argument.data());
+    return pigzpp_cli_main(static_cast<int>(argv.size()), argv.data());
+}
 
 static void normalize_newlines(std::string& data) {
     size_t output = 0;
@@ -920,8 +933,11 @@ private:
 } // namespace zipapi
 
 
-NB_MODULE(pigzpp, m) {
+NB_MODULE(_pigzpp, m) {
     m.doc() = "pigzpp: Fast gzip/zlib compression and PNG helpers (C++23 library with zlib-ng/ISA-L)";
+    m.attr("__version__") = PIGZPP_VERSION;
+    m.def("_cli_main", &run_cli, nb::arg("arguments"),
+          "Run the native pigzpp command-line interface.");
     nb::class_<GzFile>(m, "open",
         "Open a gzip file for reading or writing. Use as context manager.\n"
         "\n"

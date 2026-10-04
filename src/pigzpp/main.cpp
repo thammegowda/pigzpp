@@ -2,6 +2,7 @@
 // Drop-in replacement for pigz with compatible CLI interface.
 
 #include "pigzpp.h"
+#include "cli.h"
 #include "platform.h"
 
 #include <algorithm>
@@ -80,7 +81,6 @@ Options:
   -z, --zlib            Compress to zlib (.zz) instead of gzip format
   --                    All arguments after "--" are treated as files
 )";
-    std::exit(0);
 }
 
 // Map long options to short option characters.
@@ -338,7 +338,7 @@ static void process(const std::string& path, Config& cfg) {
     }
 }
 
-int main(int argc, char** argv) {
+int pigzpp_cli_main(int argc, char** argv) {
     platform::set_binary(0);
     platform::set_binary(1);
     Config cfg;
@@ -409,15 +409,16 @@ int main(int argc, char** argv) {
 
         if (!end_opts && arg.size() > 1 && arg[0] == '-') {
             std::string_view opts = arg.substr(1);
+            char long_option = 0;
 
             // Long option
             if (opts[0] == '-') {
-                char c = long_to_short(opts.substr(1));
-                if (c == 0) {
+                long_option = long_to_short(opts.substr(1));
+                if (long_option == 0) {
                     std::cerr << "pigzpp: invalid option: " << arg << "\n";
                     return 1;
                 }
-                opts = std::string_view(&c, 1);
+                opts = std::string_view(&long_option, 1);
             }
 
             for (size_t j = 0; j < opts.size(); j++) {
@@ -472,7 +473,9 @@ int main(int argc, char** argv) {
                 case 'E': need_param = 'E'; break;
                 case 'f': cfg.force = true; break;
                 case 'F': cfg.zopts.blocksplittinglast = 1; break;
-                case 'h': show_help(); break;
+                case 'h':
+                    show_help();
+                    return 0;
                 case 'H': cfg.strategy = Strategy::HuffmanOnly; break;
                 case 'i': cfg.setdict = false; break;
                 case 'I': need_param = 'I'; break;
@@ -522,8 +525,10 @@ int main(int argc, char** argv) {
     }
 
     // If no files and stdin is a terminal, show help
-    if (files.empty() && isatty(cfg.mode != Mode::Compress ? 0 : 1) && argc < 2)
+    if (files.empty() && isatty(cfg.mode != Mode::Compress ? 0 : 1) && argc < 2) {
         show_help();
+        return 0;
+    }
 
     try {
         if (files.empty()) {
@@ -539,3 +544,9 @@ int main(int argc, char** argv) {
 
     return 0;
 }
+
+#ifndef PIGZPP_CLI_NO_MAIN
+int main(int argc, char** argv) {
+    return pigzpp_cli_main(argc, argv);
+}
+#endif

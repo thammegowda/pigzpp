@@ -54,7 +54,7 @@ jobs:
       - name: Install test deps
         run: pip install pytest numpy pillow
       - name: Run Python tests
-        run: pytest tests/test_python.py tests/test_zip.py tests/test_png.py -v
+        run: pytest tests/test_python.py tests/test_python_cli.py tests/test_zip.py tests/test_png.py -v
 
   # Go binding (cgo -> libpigzppc.so).
   go:
