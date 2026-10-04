@@ -25,6 +25,7 @@ set_target_properties(pigzpp_py PROPERTIES
 if(UNIX AND NOT APPLE)
     target_link_options(pigzpp_py PRIVATE
         "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/pigzpp.version"
+        "LINKER:--no-undefined-version"
         "LINKER:-Bsymbolic"
     )
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")

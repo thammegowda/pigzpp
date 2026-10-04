@@ -1,6 +1,6 @@
 {
     global:
-        PyInit_pigzpp;
+        PyInit__pigzpp;
     local:
         *;
 };
