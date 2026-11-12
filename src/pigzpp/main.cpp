@@ -6,7 +6,14 @@
 #include "platform.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
+#include <chrono>
+#include <condition_variable>
+#include <cstdio>
+#include <memory>
+#include <mutex>
+#include <thread>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -156,6 +163,67 @@ static void copymeta(const std::string& from, const std::string& to) {
 #endif
 }
 
+// Reports compression progress on stderr by polling the file offsets of the
+// input and output descriptors from a helper thread.
+class Progress {
+public:
+    Progress(int ind, int outd, uint64_t total)
+        : ind_(ind), outd_(outd), total_(total),
+          start_(std::chrono::steady_clock::now()),
+          thread_([this] { run(); }) {}
+    ~Progress() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stop_ = true;
+        }
+        cv_.notify_one();
+        thread_.join();
+        print(true);
+    }
+private:
+    void run() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        while (!cv_.wait_for(lock, std::chrono::milliseconds(200), [this] { return stop_; }))
+            print(false);
+    }
+    // Format with the given decimals and a space as thousands separator.
+    static std::string fmt(double v, int decimals) {
+        char buf[64];
+        std::snprintf(buf, sizeof buf, "%.*f", decimals, v);
+        std::string s = buf;
+        size_t digits = s.find('.');
+        if (digits == std::string::npos) digits = s.size();
+        for (size_t i = digits; i > 3; i -= 3)
+            s.insert(i - 3, " ");
+        return s;
+    }
+    void print(bool last) {
+        constexpr double MB = 1024.0 * 1024.0;
+        int64_t r = platform::seek(ind_, 0, SEEK_CUR);
+        int64_t w = platform::seek(outd_, 0, SEEK_CUR);
+        double read = r < 0 ? 0.0 : static_cast<double>(r);
+        double wrote = w < 0 ? 0.0 : static_cast<double>(w);
+        if (last && total_ > 0) read = static_cast<double>(total_);
+        double secs = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - start_).count();
+        double pct = total_ > 0 ? std::min(100.0, 100.0 * read / static_cast<double>(total_)) : 100.0;
+        double rate = secs > 0 ? read / MB / secs : 0.0;
+        std::fprintf(stderr, "\r%.1f%% [total: %s Mb | read: %s Mb | write: %s Mb | %s Mb/s]%s",
+                     pct, fmt(static_cast<double>(total_) / MB, 1).c_str(),
+                     fmt(read / MB, 1).c_str(), fmt(wrote / MB, 1).c_str(),
+                     fmt(rate, 0).c_str(), last ? "\n" : "");
+        std::fflush(stderr);
+    }
+
+    int ind_, outd_;
+    uint64_t total_;
+    std::chrono::steady_clock::time_point start_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    bool stop_ = false;
+    std::thread thread_; // declared last: starts after the other members
+};
+
 // Process a single file (or stdin if path is empty).
 static void process(const std::string& path, Config& cfg) {
     std::string inf;
@@ -299,10 +367,17 @@ static void process(const std::string& path, Config& cfg) {
     g_outf = outf;
     g_outd = outd;
 
+    if (cfg.verbosity > 1)
+        std::cerr << "pigzpp: processing " << inf << "\n";
+
     try {
         if (cfg.mode == Mode::Compress) {
             Compressor comp(cfg);
+            std::unique_ptr<Progress> progress;
+            if (cfg.verbosity > 1 && !is_stdin && !cfg.pipeout && ind > 0 && outd > 1)
+                progress = std::make_unique<Progress>(ind, outd, static_cast<uint64_t>(st.st_size));
             comp.compress(ind, outd);
+            progress.reset();
         } else if (cfg.mode == Mode::Decompress || cfg.mode == Mode::Test) {
             Decompressor decomp(cfg);
             decomp.decompress(ind, outd);
