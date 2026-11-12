@@ -2,6 +2,8 @@
 #include "compress.h"
 #include "decompress.h"
 #include "config.h"
+#include "platform.h"
+#include "test_support.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -10,7 +12,6 @@
 #include <string>
 #include <vector>
 #include <fcntl.h>
-#include <unistd.h>
 
 namespace fs = std::filesystem;
 using namespace pigzpp;
@@ -20,11 +21,7 @@ protected:
     std::string tmp_dir;
 
     void SetUp() override {
-        fs::create_directories("tmp");
-        char tmpl[] = "tmp/pigzpp_test_XXXXXX";
-        char* dir = mkdtemp(tmpl);
-        ASSERT_NE(dir, nullptr);
-        tmp_dir = dir;
+        tmp_dir = test_support::make_temp_dir("pigzpp_test_");
     }
 
     void TearDown() override {
@@ -55,26 +52,26 @@ protected:
         Config cfg;
         cfg.level = level;
         cfg.procs = procs;
-        int in_fd = ::open(orig.c_str(), O_RDONLY);
-        int out_fd = ::open(gz.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+        int in_fd = platform::open(orig.c_str(), O_RDONLY);
+        int out_fd = platform::open(gz.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
         ASSERT_GE(in_fd, 0);
         ASSERT_GE(out_fd, 0);
         Compressor comp(cfg);
         comp.compress(in_fd, out_fd);
-        ::close(in_fd);
-        ::close(out_fd);
+        platform::close(in_fd);
+        platform::close(out_fd);
 
         // Decompress
-        in_fd = ::open(gz.c_str(), O_RDONLY);
-        out_fd = ::open(restored.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+        in_fd = platform::open(gz.c_str(), O_RDONLY);
+        out_fd = platform::open(restored.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
         ASSERT_GE(in_fd, 0);
         ASSERT_GE(out_fd, 0);
         Config dcfg;
         dcfg.mode = Mode::Decompress;
         Decompressor decomp(dcfg);
         decomp.decompress(in_fd, out_fd);
-        ::close(in_fd);
-        ::close(out_fd);
+        platform::close(in_fd);
+        platform::close(out_fd);
 
         EXPECT_EQ(read_file_content(restored), data);
     }
@@ -131,12 +128,12 @@ TEST_F(CompressDecompressTest, CrossCompatGzipDecompress) {
 
     Config cfg;
     cfg.level = 6;
-    int in_fd = ::open(orig.c_str(), O_RDONLY);
-    int out_fd = ::open(gz.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+    int in_fd = platform::open(orig.c_str(), O_RDONLY);
+    int out_fd = platform::open(gz.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
     Compressor comp(cfg);
     comp.compress(in_fd, out_fd);
-    ::close(in_fd);
-    ::close(out_fd);
+    platform::close(in_fd);
+    platform::close(out_fd);
 
     // Use system gzip to decompress
     std::string cmd = "gzip -d -c " + gz + " > " + restored;
@@ -159,14 +156,14 @@ TEST_F(CompressDecompressTest, CrossCompatGzipCompress) {
     int ret = system(cmd.c_str());
     ASSERT_EQ(ret, 0);
 
-    int in_fd = ::open(gz.c_str(), O_RDONLY);
-    int out_fd = ::open(restored.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+    int in_fd = platform::open(gz.c_str(), O_RDONLY);
+    int out_fd = platform::open(restored.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
     Config dcfg;
     dcfg.mode = Mode::Decompress;
     Decompressor decomp(dcfg);
     decomp.decompress(in_fd, out_fd);
-    ::close(in_fd);
-    ::close(out_fd);
+    platform::close(in_fd);
+    platform::close(out_fd);
 
     EXPECT_EQ(read_file_content(restored), data);
 }
@@ -199,19 +196,19 @@ TEST_F(CompressDecompressTest, TestMode) {
     write_file(orig, "Test integrity check data.\n");
 
     Config cfg;
-    int in_fd = ::open(orig.c_str(), O_RDONLY);
-    int out_fd = ::open(gz.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+    int in_fd = platform::open(orig.c_str(), O_RDONLY);
+    int out_fd = platform::open(gz.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
     Compressor comp(cfg);
     comp.compress(in_fd, out_fd);
-    ::close(in_fd);
-    ::close(out_fd);
+    platform::close(in_fd);
+    platform::close(out_fd);
 
-    in_fd = ::open(gz.c_str(), O_RDONLY);
+    in_fd = platform::open(gz.c_str(), O_RDONLY);
     Config tcfg;
     tcfg.mode = Mode::Test;
     Decompressor decomp(tcfg);
     EXPECT_NO_THROW(decomp.decompress(in_fd, -1));
-    ::close(in_fd);
+    platform::close(in_fd);
 }
 
 // Test thread safety: multiple Compressor/Decompressor instances in parallel
@@ -233,21 +230,21 @@ TEST_F(CompressDecompressTest, ThreadSafety) {
             Config cfg;
             cfg.procs = 1; // single-thread per instance for this test
 
-            int in_fd = ::open(orig.c_str(), O_RDONLY);
-            int out_fd = ::open(gz.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+            int in_fd = platform::open(orig.c_str(), O_RDONLY);
+            int out_fd = platform::open(gz.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
             Compressor comp(cfg);
             comp.compress(in_fd, out_fd);
-            ::close(in_fd);
-            ::close(out_fd);
+            platform::close(in_fd);
+            platform::close(out_fd);
 
-            in_fd = ::open(gz.c_str(), O_RDONLY);
-            out_fd = ::open(restored.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+            in_fd = platform::open(gz.c_str(), O_RDONLY);
+            out_fd = platform::open(restored.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
             Config dcfg;
             dcfg.mode = Mode::Decompress;
             Decompressor decomp(dcfg);
             decomp.decompress(in_fd, out_fd);
-            ::close(in_fd);
-            ::close(out_fd);
+            platform::close(in_fd);
+            platform::close(out_fd);
 
             EXPECT_EQ(read_file_content(restored), data);
         });
