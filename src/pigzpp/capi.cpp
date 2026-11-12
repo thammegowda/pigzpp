@@ -5,10 +5,15 @@
 #include "compress.h"
 #include "config.h"
 #include "decompress.h"
+#include "platform.h"
 #include "png.h"
 
+#include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
+#include <mutex>
 #include <new>
 #include <string>
 #include <thread>
@@ -46,6 +51,73 @@ int resolve_threads(int threads) {
     if (threads > 0) return threads;
     int hw = static_cast<int>(std::thread::hardware_concurrency());
     return hw > 0 ? hw : 1;
+}
+
+class FileCompressProgress {
+public:
+    FileCompressProgress(int ind, int outd, uint64_t total_size,
+                         pigzpp_compress_file_progress_callback callback);
+    ~FileCompressProgress();
+    bool finish();
+
+private:
+    void run();
+    void report();
+
+    int ind_, outd_;
+    uint64_t total_size_;
+    pigzpp_compress_file_progress_callback callback_;
+    std::chrono::steady_clock::time_point start_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    bool stop_ = false;
+    bool failed_ = false;
+    std::thread thread_;
+};
+
+FileCompressProgress::FileCompressProgress(
+    int ind, int outd, uint64_t total_size, pigzpp_compress_file_progress_callback callback)
+    : ind_(ind), outd_(outd), total_size_(total_size), callback_(callback),
+      start_(std::chrono::steady_clock::now()),
+      thread_([this] { run(); }) {}
+
+FileCompressProgress::~FileCompressProgress() {
+    finish();
+}
+
+bool FileCompressProgress::finish() {
+    if (!thread_.joinable()) return !failed_;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stop_ = true;
+    }
+    cv_.notify_one();
+    thread_.join();
+    report();
+    return !failed_;
+}
+
+void FileCompressProgress::run() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    while (!cv_.wait_for(lock, std::chrono::milliseconds(200), [this] { return stop_; })) {
+        lock.unlock();
+        report();
+        lock.lock();
+        if (failed_) break;
+    }
+}
+
+void FileCompressProgress::report() {
+    int64_t read = pigzpp::platform::seek(ind_, 0, SEEK_CUR);
+    int64_t written = pigzpp::platform::seek(outd_, 0, SEEK_CUR);
+    if (read < 0 || written < 0) {
+        failed_ = true;
+        return;
+    }
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start_).count();
+    callback_(total_size_, static_cast<uint64_t>(read), static_cast<uint64_t>(written),
+              static_cast<uint64_t>(elapsed));
 }
 
 } // namespace
@@ -89,6 +161,76 @@ pigzpp_buffer pigzpp_gzip_decompress(const uint8_t* data, size_t size,
     } catch (...) {
         return pigzpp_buffer{nullptr, 0, "pigzpp: decompression failed (unknown)"};
     }
+}
+
+const char* pigzpp_compress_file(const char* uncompressed_filename,
+                                 const char* compressed_filename,
+                                 int overwrite_existing,
+                                 int level,
+                                 int threads,
+                                 int format,
+                                 pigzpp_compress_file_progress_callback progress_callback) {
+    if (!uncompressed_filename || !compressed_filename)
+        return "pigzpp: null filename";
+    pigzpp::Format output_format;
+    switch (format) {
+    case PIGZPP_FORMAT_GZIP: output_format = pigzpp::Format::Gzip; break;
+    case PIGZPP_FORMAT_ZLIB: output_format = pigzpp::Format::Zlib; break;
+    case PIGZPP_FORMAT_ZIP: output_format = pigzpp::Format::Zip; break;
+    case PIGZPP_FORMAT_RAW: output_format = pigzpp::Format::Raw; break;
+    default: return "pigzpp: invalid compression format";
+    }
+    int in_fd = -1, out_fd = -1;
+    const char* error = nullptr;
+    bool out_created = false;
+    try {
+        pigzpp::platform::FileStat st{};
+        in_fd = pigzpp::platform::open(uncompressed_filename, O_RDONLY);
+        if (in_fd < 0) return "pigzpp: cannot open input file";
+        if (pigzpp::platform::fstat(in_fd, &st) != 0 || !pigzpp::platform::is_regular(st)) {
+            pigzpp::platform::close(in_fd);
+            return "pigzpp: input is not a regular file";
+        }
+        out_fd = pigzpp::platform::open(
+            compressed_filename,
+            O_CREAT | O_TRUNC | O_WRONLY | (overwrite_existing ? 0 : O_EXCL), 0600);
+        if (out_fd < 0) {
+            pigzpp::platform::close(in_fd);
+            return "pigzpp: cannot create output file (exists or not writable)";
+        }
+        out_created = true;
+
+        pigzpp::Config cfg;
+        cfg.form = output_format;
+        cfg.mode = pigzpp::Mode::Compress;
+        cfg.level = level;
+        cfg.procs = resolve_threads(threads);
+        cfg.verbosity = 0;
+        cfg.mtime = static_cast<int64_t>(st.st_mtime);
+        std::string name = uncompressed_filename;
+        size_t slash = name.find_last_of("/\\");
+        cfg.name = slash == std::string::npos ? name : name.substr(slash + 1);
+
+        std::unique_ptr<FileCompressProgress> progress;
+        if (progress_callback)
+            progress = std::make_unique<FileCompressProgress>(
+                in_fd, out_fd, static_cast<uint64_t>(st.st_size), progress_callback);
+
+        pigzpp::Compressor comp(cfg);
+        comp.compress(in_fd, out_fd);
+        if (progress && !progress->finish())
+            error = "pigzpp: failed to read compression progress";
+        progress.reset();
+    } catch (const std::exception&) {
+        error = "pigzpp: compression failed";
+    } catch (...) {
+        error = "pigzpp: compression failed (unknown)";
+    }
+    if (in_fd >= 0) pigzpp::platform::close(in_fd);
+    if (out_fd >= 0 && pigzpp::platform::close(out_fd) != 0 && !error)
+        error = "pigzpp: failed to close output file";
+    if (error && out_created) pigzpp::platform::unlink(compressed_filename);
+    return error;
 }
 
 void pigzpp_free(pigzpp_buffer buf) {
