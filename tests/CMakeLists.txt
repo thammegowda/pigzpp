@@ -12,6 +12,8 @@ add_executable(pigzpp_tests
     test_crc.cpp
     test_pool.cpp
     test_compress_decompress.cpp
+    test_capi.cpp
+    ../src/pigzpp/capi.cpp
     test_cli.cpp
     test_format.cpp
     test_png_cpp.cpp
