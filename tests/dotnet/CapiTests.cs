@@ -15,6 +15,12 @@ namespace Pigzpp.Tests
             return b;
         }
 
+        [Fact]
+        public void NativeLibraryIsAvailable()
+        {
+            Assert.True(Pigzpp.IsAvailable());
+        }
+
         [Theory]
         [InlineData(Engine.Auto)]
         [InlineData(Engine.Zlib)]
