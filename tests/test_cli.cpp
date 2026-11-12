@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "test_support.h"
 
 #include <cstdlib>
 #include <filesystem>
@@ -13,14 +14,10 @@ protected:
     std::string pigzpp_bin;
 
     void SetUp() override {
-        fs::create_directories("tmp");
-        char tmpl[] = "tmp/pigzpp_cli_XXXXXX";
-        char* dir = mkdtemp(tmpl);
-        ASSERT_NE(dir, nullptr);
-        tmp_dir = dir;
+        tmp_dir = test_support::make_temp_dir("pigzpp_cli_");
 
         // Find the pigzpp binary (built in the same build tree)
-        pigzpp_bin = PIGZPP_BIN_PATH;
+        pigzpp_bin = "\"" + fs::path(PIGZPP_BIN_PATH).make_preferred().string() + "\"";
     }
 
     void TearDown() override {
@@ -42,7 +39,11 @@ protected:
     }
 
     int run(const std::string& args) {
+#ifdef _WIN32
+        std::string cmd = pigzpp_bin + " " + args + " 2>NUL";
+#else
         std::string cmd = pigzpp_bin + " " + args + " 2>/dev/null";
+#endif
         return system(cmd.c_str());
     }
 };
@@ -104,10 +105,17 @@ TEST_F(CLITest, PipeMode) {
     auto restored = path("pipe_restored.txt");
     write_file(orig, "pipe test data\n");
 
-    std::string cmd = "cat " + orig + " | " + pigzpp_bin + " > " + gz;
+#ifdef _WIN32
+    const std::string cat = "type ";
+#else
+    const std::string cat = "cat ";
+#endif
+    std::string cmd = cat + "\"" + fs::path(orig).make_preferred().string() +
+                      "\" | " + pigzpp_bin + " > " + gz;
     EXPECT_EQ(system(cmd.c_str()), 0);
 
-    cmd = "cat " + gz + " | " + pigzpp_bin + " -d > " + restored;
+    cmd = cat + "\"" + fs::path(gz).make_preferred().string() +
+          "\" | " + pigzpp_bin + " -d > " + restored;
     EXPECT_EQ(system(cmd.c_str()), 0);
     EXPECT_EQ(read_file_content(restored), "pipe test data\n");
 }

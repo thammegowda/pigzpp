@@ -12,13 +12,19 @@ add_executable(pigzpp_tests
     test_crc.cpp
     test_pool.cpp
     test_compress_decompress.cpp
+    test_capi.cpp
+    ../src/pigzpp/capi.cpp
     test_cli.cpp
     test_format.cpp
     test_png_cpp.cpp
     test_zip.cpp
 )
 target_link_libraries(pigzpp_tests PRIVATE pigzpp_lib GTest::gtest_main)
-target_compile_options(pigzpp_tests PRIVATE -Wall -Wextra)
+add_dependencies(pigzpp_tests pigzpp_exe)
+target_compile_options(pigzpp_tests PRIVATE
+    $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra>
+    $<$<CXX_COMPILER_ID:MSVC>:/W4>
+)
 target_compile_definitions(pigzpp_tests PRIVATE
     PIGZPP_BIN_PATH="$<TARGET_FILE:pigzpp_exe>"
 )

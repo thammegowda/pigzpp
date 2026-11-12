@@ -4,6 +4,7 @@
 #   make build          Build release mode (optimized, static CLI)
 #   make debug          Build debug mode (sanitizers, no optimizations)
 #   make test           Run C++ and Python tests
+#   make test-dotnet    Run .NET binding tests (skipped if dotnet is not installed)
 #   make bench-setup    Create benchmark data files, install Python packages
 #   make bench-bin      Benchmark CLI: gzip vs pigz vs pigzpp (requires hyperfine)
 #   make bench-py       Benchmark Python: gzip vs zlib-ng vs isal vs pigzpp
@@ -13,7 +14,11 @@
 #   make install-py     Install pigzpp Python package (pip install)
 #   make clean          Remove build artifacts
 
+ifeq ($(OS),Windows_NT)
+NPROC  ?= $(NUMBER_OF_PROCESSORS)
+else
 NPROC  ?= $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+endif
 SIZES  ?= 16 128 1024 8192
 ITERS  ?= 7
 THREADS ?= 1 4 8 16
@@ -28,7 +33,17 @@ PIGZPP_BIN      := $(BUILD_DIR)/pigzpp
 .PHONY: setup
 
 setup:
+ifeq ($(OS),Windows_NT)
+	@echo Windows dependencies need to be installed manually.
+	@echo can be installed using winget:
+	@echo winget install ezwinports.make
+	@echo winget install cmake
+	@echo winget install nasm
+	@echo winget install Python.Python.3.15
+	@echo gzip needs to be in path
+else
 	@bash scripts/setup.sh
+endif
 
 # ─── Build ────────────────────────────────────────────────────────────────────
 
@@ -39,17 +54,16 @@ build:
 		-DCMAKE_BUILD_TYPE=Release \
 		-DPIGZPP_STATIC=ON \
 		-DPIGZPP_LTO=ON
-	cmake --build $(BUILD_DIR) -j$(NPROC)
-	@echo "\n✓ Release build complete: $(PIGZPP_BIN)"
-	@ls -lh $(PIGZPP_BIN) $(BUILD_DIR)/pigzpp.abi3.* 2>/dev/null || true
+	cmake --build $(BUILD_DIR) --config Release --parallel $(NPROC)
+	@echo Release build complete in $(BUILD_DIR)
 
 debug:
 	cmake -S . -B $(DEBUG_DIR) \
 		-DCMAKE_BUILD_TYPE=Debug \
 		-DPIGZPP_STATIC=OFF \
 		-DPIGZPP_LTO=OFF
-	cmake --build $(DEBUG_DIR) -j$(NPROC)
-	@echo "\n✓ Debug build complete: $(DEBUG_DIR)/pigzpp"
+	cmake --build $(DEBUG_DIR) --config Debug --parallel $(NPROC)
+	@echo Debug build complete in $(DEBUG_DIR)
 
 clean:
 	rm -rf $(BUILD_DIR) $(DEBUG_DIR)
@@ -59,11 +73,27 @@ clean:
 test: test-cpp test-py
 
 test-cpp: build
-	cd $(BUILD_DIR) && ctest --output-on-failure -j$(NPROC)
+	ctest --test-dir $(BUILD_DIR) -C Release --output-on-failure --parallel $(NPROC)
 
 test-py: build
 	PYTHONPATH=$(CURDIR)/$(BUILD_DIR) python -m pytest tests/test_python.py tests/test_zip.py tests/test_png.py -v
 
+# .NET binding tests (src/dotnet, tests/dotnet); needs the dotnet CLI and the
+# shared C-ABI library (pigzppc), built here with PIGZPP_BUILD_CAPI=ON.
+ifeq ($(OS),Windows_NT)
+HAVE_DOTNET := $(shell where dotnet 2>nul)
+else
+HAVE_DOTNET := $(shell command -v dotnet 2>/dev/null)
+endif
+
+test-dotnet:
+ifeq ($(strip $(HAVE_DOTNET)),)
+	@echo "dotnet CLI not found; skipping .NET tests"
+else
+	cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=Release -DPIGZPP_BUILD_CAPI=ON
+	cmake --build $(BUILD_DIR) --config Release --target pigzppc --parallel $(NPROC)
+	dotnet test tests/dotnet/Pigzpp.Tests.csproj -p:PigzppBuildDir=$(CURDIR)/$(BUILD_DIR)
+endif
 # ─── Benchmarks ───────────────────────────────────────────────────────────────
 
 .PHONY: bench-setup bench-bin bench-py bench-png bench-report-setup bench-report bench
