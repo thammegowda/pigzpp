@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "png.h"
+#include "test_support.h"
 
 #include <filesystem>
 #include <stdexcept>
@@ -13,11 +14,7 @@ protected:
     std::string tmp_dir;
 
     void SetUp() override {
-        fs::create_directories("tmp");
-        char tmpl[] = "tmp/pigzpp_png_XXXXXX";
-        char* dir = mkdtemp(tmpl);
-        ASSERT_NE(dir, nullptr);
-        tmp_dir = dir;
+        tmp_dir = test_support::make_temp_dir("pigzpp_png_");
     }
 
     void TearDown() override {
