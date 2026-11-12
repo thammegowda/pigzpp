@@ -24,6 +24,13 @@ A .NET (netstandard2.0) binding for the pigzpp C ABI (`src/pigzpp/capi.h`).
 All functions are static methods of `Pigzpp.Pigzpp`. Errors reported by the
 native library are thrown as `PigzppException`.
 
+Check whether the native library can be loaded before using the binding:
+
+```csharp
+if (!Pigzpp.Pigzpp.IsAvailable())
+    Console.WriteLine("The pigzpp native library is unavailable.");
+```
+
 ### Compress and decompress a buffer
 
 ```csharp
