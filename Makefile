@@ -4,6 +4,7 @@
 #   make build          Build release mode (optimized, static CLI)
 #   make debug          Build debug mode (sanitizers, no optimizations)
 #   make test           Run C++ and Python tests
+#   make test-dotnet    Run .NET binding tests (skipped if dotnet is not installed)
 #   make bench-setup    Create benchmark data files, install Python packages
 #   make bench-bin      Benchmark CLI: gzip vs pigz vs pigzpp (requires hyperfine)
 #   make bench-py       Benchmark Python: gzip vs zlib-ng vs isal vs pigzpp
@@ -77,6 +78,22 @@ test-cpp: build
 test-py: build
 	PYTHONPATH=$(CURDIR)/$(BUILD_DIR) python -m pytest tests/test_python.py tests/test_zip.py tests/test_png.py -v
 
+# .NET binding tests (src/dotnet, tests/dotnet); needs the dotnet CLI and the
+# shared C-ABI library (pigzppc), built here with PIGZPP_BUILD_CAPI=ON.
+ifeq ($(OS),Windows_NT)
+HAVE_DOTNET := $(shell where dotnet 2>nul)
+else
+HAVE_DOTNET := $(shell command -v dotnet 2>/dev/null)
+endif
+
+test-dotnet:
+ifeq ($(strip $(HAVE_DOTNET)),)
+	@echo "dotnet CLI not found; skipping .NET tests"
+else
+	cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=Release -DPIGZPP_BUILD_CAPI=ON
+	cmake --build $(BUILD_DIR) --config Release --target pigzppc --parallel $(NPROC)
+	dotnet test tests/dotnet/Pigzpp.Tests.csproj -p:PigzppBuildDir=$(CURDIR)/$(BUILD_DIR)
+endif
 # ─── Benchmarks ───────────────────────────────────────────────────────────────
 
 .PHONY: bench-setup bench-bin bench-py bench-png bench-report-setup bench-report bench
