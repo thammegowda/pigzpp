@@ -195,10 +195,25 @@ const char* pigzpp_compress_file(const char* uncompressed_filename,
         }
         out_fd = pigzpp::platform::open(
             compressed_filename,
-            O_CREAT | O_TRUNC | O_WRONLY | (overwrite_existing ? 0 : O_EXCL), 0600);
+            O_CREAT | O_WRONLY | (overwrite_existing ? 0 : O_EXCL), 0600);
         if (out_fd < 0) {
             pigzpp::platform::close(in_fd);
             return "pigzpp: cannot create output file (exists or not writable)";
+        }
+        bool created_new = !overwrite_existing;
+        int same_file = pigzpp::platform::same_file(in_fd, out_fd);
+        if (same_file != 0) {
+            if (same_file > 0) created_new = false;
+            error = same_file > 0 ? "pigzpp: input and output are the same file"
+                                  : "pigzpp: cannot check file identity";
+        } else if (pigzpp::platform::truncate(out_fd, 0) != 0) {
+            error = "pigzpp: cannot truncate output file";
+        }
+        if (error) {
+            pigzpp::platform::close(in_fd);
+            pigzpp::platform::close(out_fd);
+            if (created_new) pigzpp::platform::unlink(compressed_filename);
+            return error;
         }
         out_created = true;
 

@@ -68,10 +68,11 @@ typedef void (*pigzpp_compress_file_progress_callback)(uint64_t total_size,
 // Compress `uncompressed_filename` to `compressed_filename` using `format`
 // (see pigzpp_format). ZIP output contains one entry named after the input file.
 // `overwrite_existing` (non-zero) allows replacing an existing output file;
-// otherwise it is an error if it exists. `level` is 1-9 (or -1 for default);
-// `threads` of 0 (or less) uses the default. `progress_callback` may be
-// NULL. Returns NULL on success, or a static error message on failure (any
-// partial output file is removed).
+// otherwise it is an error if it exists. The input and output must not refer
+// to the same file, including through hard links or symbolic links. `level` is
+// 1-9 (or -1 for default); `threads` of 0 (or less) uses the default.
+// `progress_callback` may be NULL. Returns NULL on success, or a static error
+// message on failure (any partial output file is removed).
 PIGZPP_CAPI const char* pigzpp_compress_file(const char* uncompressed_filename,
                                  const char* compressed_filename,
                                  int overwrite_existing,

@@ -11,6 +11,7 @@
 #include <iterator>
 #include <mutex>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace {
@@ -165,6 +166,88 @@ TEST_F(CapiFileTest, InvalidFormatDoesNotOverwriteOutput) {
     std::ifstream file(output);
     EXPECT_EQ(std::string(std::istreambuf_iterator<char>(file), {}), "preserved");
     EXPECT_TRUE(samples.empty());
+}
+
+TEST_F(CapiFileTest, OverwriteRejectsInputPathAsOutput) {
+    const auto input = (std::filesystem::path(dir) / "input.txt").string();
+    {
+        std::ofstream file(input, std::ios::binary);
+        file << "preserve this input";
+    }
+
+    const char* error = pigzpp_compress_file(
+        input.c_str(), input.c_str(), 1, 6, 1, PIGZPP_FORMAT_GZIP, record_progress);
+    ASSERT_NE(error, nullptr);
+    EXPECT_STREQ(error, "pigzpp: input and output are the same file");
+    std::ifstream file(input, std::ios::binary);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(file), {}), "preserve this input");
+    EXPECT_TRUE(samples.empty());
+}
+
+TEST_F(CapiFileTest, OverwriteRejectsHardLinkToInput) {
+    const auto input = std::filesystem::path(dir) / "input.txt";
+    const auto output = std::filesystem::path(dir) / "hardlink.gz";
+    {
+        std::ofstream file(input, std::ios::binary);
+        file << "preserve this input";
+    }
+    std::filesystem::create_hard_link(input, output);
+
+    const char* error = pigzpp_compress_file(
+        input.string().c_str(), output.string().c_str(), 1, 6, 1,
+        PIGZPP_FORMAT_GZIP, record_progress);
+    ASSERT_NE(error, nullptr);
+    EXPECT_STREQ(error, "pigzpp: input and output are the same file");
+    EXPECT_TRUE(std::filesystem::exists(output));
+    std::ifstream file(input, std::ios::binary);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(file), {}), "preserve this input");
+    EXPECT_TRUE(samples.empty());
+}
+
+TEST_F(CapiFileTest, OverwriteRejectsSymlinkToInput) {
+    const auto input = std::filesystem::path(dir) / "input.txt";
+    const auto output = std::filesystem::path(dir) / "symlink.gz";
+    {
+        std::ofstream file(input, std::ios::binary);
+        file << "preserve this input";
+    }
+    std::error_code ec;
+    std::filesystem::create_symlink(input.filename(), output, ec);
+    if (ec)
+        GTEST_SKIP() << "Unable to create symbolic link: " << ec.message();
+
+    const char* error = pigzpp_compress_file(
+        input.string().c_str(), output.string().c_str(), 1, 6, 1,
+        PIGZPP_FORMAT_GZIP, record_progress);
+    ASSERT_NE(error, nullptr);
+    EXPECT_STREQ(error, "pigzpp: input and output are the same file");
+    EXPECT_TRUE(std::filesystem::is_symlink(output));
+    std::ifstream file(input, std::ios::binary);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(file), {}), "preserve this input");
+    EXPECT_TRUE(samples.empty());
+}
+
+TEST_F(CapiFileTest, OverwriteReplacesDifferentFile) {
+    const auto input = (std::filesystem::path(dir) / "input.txt").string();
+    const auto output = (std::filesystem::path(dir) / "output.gz").string();
+    const std::string data = "compress this input";
+    {
+        std::ofstream in(input, std::ios::binary);
+        std::ofstream out(output, std::ios::binary);
+        in << data;
+        out << std::string(4096, 'x');
+    }
+
+    const char* error = pigzpp_compress_file(
+        input.c_str(), output.c_str(), 1, 6, 1, PIGZPP_FORMAT_GZIP, nullptr);
+    ASSERT_EQ(error, nullptr) << (error ? error : "");
+    std::ifstream file(output, std::ios::binary);
+    std::vector<uint8_t> compressed{std::istreambuf_iterator<char>(file),
+                                    std::istreambuf_iterator<char>()};
+    auto decompressed = pigzpp_gzip_decompress(compressed.data(), compressed.size(), 1);
+    ASSERT_EQ(decompressed.error, nullptr) << (decompressed.error ? decompressed.error : "");
+    EXPECT_EQ(std::string(reinterpret_cast<const char*>(decompressed.data), decompressed.size), data);
+    pigzpp_free(decompressed);
 }
 
 TEST_F(CapiFileTest, ProgressReportsPeriodically) {
