@@ -95,6 +95,9 @@ void save_buffer(
     const EncodeOptions& options = {}
 );
 
+// Decodes any valid PNG (all colour types and bit depths, PLTE/tRNS, Adam7) to 8-bit samples:
+// gray(1), gray+alpha(2), RGB(3) or RGBA(4). Palette images become RGB, or RGBA when tRNS is present;
+// gray/RGB images with a tRNS colour key gain an alpha channel; 16-bit samples keep the high byte.
 Image decode(const uint8_t* png_data, size_t png_size);
 Image load(const std::string& path);
 
