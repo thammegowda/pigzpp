@@ -172,6 +172,8 @@ const char* pigzpp_compress_file(const char* uncompressed_filename,
                                  pigzpp_compress_file_progress_callback progress_callback) {
     if (!uncompressed_filename || !compressed_filename)
         return "pigzpp: null filename";
+    if (level != -1 && (level < 1 || level > 9))
+        return "pigzpp: invalid compression level";
     pigzpp::Format output_format;
     switch (format) {
     case PIGZPP_FORMAT_GZIP: output_format = pigzpp::Format::Gzip; break;
