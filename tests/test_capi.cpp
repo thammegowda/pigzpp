@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "capi.h"
+#include "platform.h"
 #include "test_support.h"
 #include "zip.h"
 
@@ -249,6 +250,99 @@ TEST_F(CapiFileTest, OverwriteReplacesDifferentFile) {
     EXPECT_EQ(std::string(reinterpret_cast<const char*>(decompressed.data), decompressed.size), data);
     pigzpp_free(decompressed);
 }
+
+TEST_F(CapiFileTest, Utf8FilePathsRoundTripAndOverwrite) {
+    const auto unicode_dir = std::filesystem::path(dir) / std::filesystem::path(u8"\u76ee\u5f55");
+    std::filesystem::create_directory(unicode_dir);
+    const auto input = unicode_dir / std::filesystem::path(u8"\u6587\u4ef6-\U0001f600.txt");
+    const auto output = unicode_dir / std::filesystem::path(u8"\u538b\u7f29.gz");
+    const auto input_u8 = input.u8string();
+    const auto output_u8 = output.u8string();
+    const std::string input_utf8(input_u8.begin(), input_u8.end());
+    const std::string output_utf8(output_u8.begin(), output_u8.end());
+    const std::string data = "unicode filename contents";
+    {
+        std::ofstream file(input, std::ios::binary);
+        ASSERT_TRUE(file);
+        file << data;
+    }
+
+    const char* error = pigzpp_compress_file(
+        input_utf8.c_str(), output_utf8.c_str(), 0, 6, 1, PIGZPP_FORMAT_GZIP, nullptr);
+    ASSERT_EQ(error, nullptr) << (error ? error : "");
+    EXPECT_NE(pigzpp_compress_file(input_utf8.c_str(), output_utf8.c_str(), 0, 6, 1,
+                                   PIGZPP_FORMAT_GZIP, nullptr), nullptr);
+    error = pigzpp_compress_file(
+        input_utf8.c_str(), output_utf8.c_str(), 1, 6, 1, PIGZPP_FORMAT_GZIP, nullptr);
+    ASSERT_EQ(error, nullptr) << (error ? error : "");
+    error = pigzpp_compress_file(
+        input_utf8.c_str(), input_utf8.c_str(), 1, 6, 1, PIGZPP_FORMAT_GZIP, nullptr);
+    ASSERT_NE(error, nullptr);
+    EXPECT_STREQ(error, "pigzpp: input and output are the same file");
+
+    std::ifstream file(output, std::ios::binary);
+    ASSERT_TRUE(file);
+    std::vector<uint8_t> compressed{std::istreambuf_iterator<char>(file), {}};
+    auto decompressed = pigzpp_gzip_decompress(compressed.data(), compressed.size(), 1);
+    ASSERT_EQ(decompressed.error, nullptr) << (decompressed.error ? decompressed.error : "");
+    EXPECT_EQ(std::string(reinterpret_cast<const char*>(decompressed.data), decompressed.size), data);
+    pigzpp_free(decompressed);
+
+    const auto zip_output = unicode_dir / std::filesystem::path(u8"\u538b\u7f29.zip");
+    const auto zip_output_u8 = zip_output.u8string();
+    const std::string zip_output_utf8(zip_output_u8.begin(), zip_output_u8.end());
+    error = pigzpp_compress_file(
+        input_utf8.c_str(), zip_output_utf8.c_str(), 0, 6, 1, PIGZPP_FORMAT_ZIP, nullptr);
+    ASSERT_EQ(error, nullptr) << (error ? error : "");
+    std::ifstream zip_file(zip_output, std::ios::binary);
+    ASSERT_TRUE(zip_file);
+    std::vector<uint8_t> zip_bytes{std::istreambuf_iterator<char>(zip_file), {}};
+    ASSERT_GE(zip_bytes.size(), 8u);
+    uint16_t zip_flags = static_cast<uint16_t>(zip_bytes[6] | (zip_bytes[7] << 8));
+    EXPECT_NE(zip_flags & 0x0800u, 0u);
+    pigzpp::zip::ZipReader reader(zip_bytes);
+    const auto expected_u8 = input.filename().u8string();
+    const std::string expected_name(expected_u8.begin(), expected_u8.end());
+    ASSERT_EQ(reader.entries().size(), 1u);
+    EXPECT_EQ(reader.entries()[0].name, expected_name);
+    auto extracted = reader.read(expected_name);
+    EXPECT_EQ(std::string(extracted.begin(), extracted.end()), data);
+}
+
+#if defined(_WIN32)
+TEST_F(CapiFileTest, InvalidUtf8PathsAreRejectedBeforeOpeningOutput) {
+    const auto input = std::filesystem::path(dir) / "input.txt";
+    const auto output = std::filesystem::path(dir) / "output.gz";
+    {
+        std::ofstream file(input);
+        file << "input";
+    }
+    const auto input_u8 = input.u8string();
+    const auto output_u8 = output.u8string();
+    const std::string input_utf8(input_u8.begin(), input_u8.end());
+    const std::string output_utf8(output_u8.begin(), output_u8.end());
+    const char* error = pigzpp_compress_file(
+        "\xc3\x28", output_utf8.c_str(), 1, 6, 1, PIGZPP_FORMAT_GZIP, nullptr);
+    ASSERT_NE(error, nullptr);
+    EXPECT_STREQ(error, "pigzpp: invalid UTF-8 filename");
+    error = pigzpp_compress_file(
+        input_utf8.c_str(), "\xc3\x28", 1, 6, 1, PIGZPP_FORMAT_GZIP, nullptr);
+    ASSERT_NE(error, nullptr);
+    EXPECT_STREQ(error, "pigzpp: invalid UTF-8 filename");
+    EXPECT_FALSE(std::filesystem::exists(output));
+}
+
+TEST_F(CapiFileTest, WidePathCleanupRemovesUnicodeFile) {
+    const auto path = std::filesystem::path(dir) / std::filesystem::path(u8"\u6587\u4ef6.gz");
+    {
+        std::ofstream file(path);
+        ASSERT_TRUE(file);
+        file << "partial output";
+    }
+    EXPECT_EQ(pigzpp::platform::unlink(path.c_str()), 0);
+    EXPECT_FALSE(std::filesystem::exists(path));
+}
+#endif
 
 TEST_F(CapiFileTest, ProgressReportsPeriodically) {
     std::string data(128 * 1024 * 1024, '\0');

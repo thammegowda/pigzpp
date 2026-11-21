@@ -66,7 +66,9 @@ typedef void (*pigzpp_compress_file_progress_callback)(uint64_t total_size,
                                                        uint64_t elapsed_ms);
 
 // Compress `uncompressed_filename` to `compressed_filename` using `format`
-// (see pigzpp_format). ZIP output contains one entry named after the input file.
+// (see pigzpp_format). Both filenames are NUL-terminated UTF-8 strings;
+// invalid UTF-8 is rejected on Windows. ZIP output contains one entry named
+// after the input file.
 // `overwrite_existing` (non-zero) allows replacing an existing output file;
 // otherwise it is an error if it exists. The input and output must not refer
 // to the same file, including through hard links or symbolic links. `level` is

@@ -185,16 +185,20 @@ const char* pigzpp_compress_file(const char* uncompressed_filename,
     int in_fd = -1, out_fd = -1;
     const char* error = nullptr;
     bool out_created = false;
+    pigzpp::platform::NativePath input_path, output_path;
     try {
+        if (!pigzpp::platform::native_path(uncompressed_filename, input_path) ||
+            !pigzpp::platform::native_path(compressed_filename, output_path))
+            return "pigzpp: invalid UTF-8 filename";
         pigzpp::platform::FileStat st{};
-        in_fd = pigzpp::platform::open(uncompressed_filename, O_RDONLY);
+        in_fd = pigzpp::platform::open(input_path.c_str(), O_RDONLY);
         if (in_fd < 0) return "pigzpp: cannot open input file";
         if (pigzpp::platform::fstat(in_fd, &st) != 0 || !pigzpp::platform::is_regular(st)) {
             pigzpp::platform::close(in_fd);
             return "pigzpp: input is not a regular file";
         }
         out_fd = pigzpp::platform::open(
-            compressed_filename,
+            output_path.c_str(),
             O_CREAT | O_WRONLY | (overwrite_existing ? 0 : O_EXCL), 0600);
         if (out_fd < 0) {
             pigzpp::platform::close(in_fd);
@@ -212,7 +216,7 @@ const char* pigzpp_compress_file(const char* uncompressed_filename,
         if (error) {
             pigzpp::platform::close(in_fd);
             pigzpp::platform::close(out_fd);
-            if (created_new) pigzpp::platform::unlink(compressed_filename);
+            if (created_new) pigzpp::platform::unlink(output_path.c_str());
             return error;
         }
         out_created = true;
@@ -246,7 +250,7 @@ const char* pigzpp_compress_file(const char* uncompressed_filename,
     if (in_fd >= 0) pigzpp::platform::close(in_fd);
     if (out_fd >= 0 && pigzpp::platform::close(out_fd) != 0 && !error)
         error = "pigzpp: failed to close output file";
-    if (error && out_created) pigzpp::platform::unlink(compressed_filename);
+    if (error && out_created) pigzpp::platform::unlink(output_path.c_str());
     return error;
 }
 

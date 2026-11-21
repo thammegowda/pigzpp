@@ -115,6 +115,23 @@ namespace Pigzpp.Tests
         }
 
         [Fact]
+        public void CompressFileUnicodePaths()
+        {
+            var dir = Directory.CreateTempSubdirectory("pigzpp-dotnet").FullName;
+            try
+            {
+                var subdir = Directory.CreateDirectory(Path.Combine(dir, "\u76ee\u5f55")).FullName;
+                var src = Path.Combine(subdir, "\u6587\u4ef6-\U0001f600.bin");
+                var dst = Path.Combine(subdir, "\u538b\u7f29.gz");
+                var data = Sample(1000);
+                File.WriteAllBytes(src, data);
+                Pigzpp.CompressFile(src, dst);
+                Assert.Equal(data, Pigzpp.GzipDecompress(File.ReadAllBytes(dst)));
+            }
+            finally { Directory.Delete(dir, true); }
+        }
+
+        [Fact]
         public void CompressFileMissingInputThrows()
         {
             var dir = Directory.CreateTempSubdirectory("pigzpp-dotnet").FullName;

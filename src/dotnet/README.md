@@ -54,6 +54,8 @@ byte[] fast = Pigzpp.Pigzpp.GzipCompress(data, level: 1, engine: Engine.Isal);
 
 ### Compress a file
 
+File paths are passed to the native API as UTF-8; Unicode paths are supported on Windows.
+
 ```csharp
 // Formats: Gzip, Zlib, Zip (archive with one entry), Raw (raw DEFLATE).
 Pigzpp.Pigzpp.CompressFile("input.bin", "input.bin.gz",
