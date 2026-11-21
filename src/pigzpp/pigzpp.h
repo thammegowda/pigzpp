@@ -5,6 +5,7 @@
 #pragma once
 
 #include "config.h"
+#include "io_utils.h"
 #include "compress.h"
 #include "decompress.h"
 #include "png.h"

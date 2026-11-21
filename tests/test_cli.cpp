@@ -6,6 +6,18 @@
 #include <fstream>
 #include <string>
 
+#if !defined(_WIN32)
+#include <cerrno>
+#include <chrono>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <sys/wait.h>
+#include <termios.h>
+#include <thread>
+#include <unistd.h>
+#include <vector>
+#endif
+
 namespace fs = std::filesystem;
 
 class CLITest : public ::testing::Test {
@@ -119,3 +131,95 @@ TEST_F(CLITest, PipeMode) {
     EXPECT_EQ(system(cmd.c_str()), 0);
     EXPECT_EQ(read_file_content(restored), "pipe test data\n");
 }
+
+TEST_F(CLITest, VerboseProgressOnlyOnStderr) {
+    auto orig = path("progress.txt"), gz = path("progress.gz");
+    auto err = path("progress.err"), restored = path("progress_restored.txt");
+    std::string data(300000, 'p');
+    write_file(orig, data);
+
+    // -v -c and -v -dc: clean data on stdout, single final summary on redirected stderr.
+    EXPECT_EQ(system((pigzpp_bin + " -v -c " + orig + " > " + gz + " 2> " + err).c_str()), 0);
+    EXPECT_NE(read_file_content(err).find("100.0% 293.0KiB/293.0KiB -> "), std::string::npos);
+
+    EXPECT_EQ(system((pigzpp_bin + " -v -d -c " + gz + " > " + restored + " 2> " + err).c_str()), 0);
+    EXPECT_EQ(read_file_content(restored), data);
+    EXPECT_NE(read_file_content(err).find(" -> 293.0KiB "), std::string::npos);
+
+    // Default verbosity: silent stderr.
+    EXPECT_EQ(system((pigzpp_bin + " -c " + orig + " > " + gz + " 2> " + err).c_str()), 0);
+    EXPECT_EQ(read_file_content(err), "");
+}
+
+#if !defined(_WIN32)
+TEST_F(CLITest, ProgressTerminalWidthAndErrorNewline) {
+    auto run_pty = [](unsigned short width, const std::vector<const char*>& args, int stall_ms = 0) {
+        int master = posix_openpt(O_RDWR | O_NOCTTY), out_pipe[2] = {-1, -1};
+        if (master < 0 || grantpt(master) != 0 || unlockpt(master) != 0 || ::pipe(out_pipe) != 0)
+            return std::string{};
+        int slave = ::open(ptsname(master), O_RDWR | O_NOCTTY);
+        struct winsize window{24, width, 0, 0};
+        ioctl(slave, TIOCSWINSZ, &window);
+        struct termios term{};
+        tcgetattr(slave, &term);
+        term.c_oflag &= ~ONLCR;
+        tcsetattr(slave, TCSANOW, &term);
+
+        pid_t child = fork();
+        if (child == 0) {
+            dup2(out_pipe[1], 1);
+            dup2(slave, 2);
+            ::close(out_pipe[0]); ::close(out_pipe[1]); ::close(master); ::close(slave);
+            std::vector<char*> argv;
+            for (const char* a : args) argv.push_back(const_cast<char*>(a));
+            argv.push_back(nullptr);
+            execv(PIGZPP_BIN_PATH, argv.data());
+            std::_Exit(127);
+        }
+        ::close(slave);
+        ::close(out_pipe[1]);
+        if (stall_ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(stall_ms));
+        char buf[4096];
+        while (::read(out_pipe[0], buf, sizeof buf) > 0) {}
+        ::close(out_pipe[0]);
+
+        std::string output;
+        for (;;) {
+            ssize_t got = ::read(master, buf, sizeof buf);
+            if (got > 0) output.append(buf, static_cast<size_t>(got));
+            else if (got == 0 || errno != EINTR) break;
+        }
+        ::close(master);
+        waitpid(child, nullptr, 0);
+        return output;
+    };
+
+    auto orig = path("progress.txt"), gz = path("good.gz"), bad = path("bad.gz");
+    write_file(orig, std::string(1000000, 'p'));
+
+    for (unsigned short width : {80, 24, 6}) {
+        std::string out = run_pty(width, {PIGZPP_BIN_PATH, "-v", "-c", orig.c_str()});
+        size_t cr = out.rfind('\r');
+        if (width > 6) {
+            ASSERT_NE(cr, std::string::npos);
+            std::string line = out.substr(cr + 1, out.find('\n', cr) - cr - 1);
+            EXPECT_LT(line.size(), width);
+            EXPECT_EQ(line.find(" -> ") != std::string::npos, width == 80);
+        } else {
+            EXPECT_EQ(cr, std::string::npos);
+            EXPECT_NE(out.find("100.0%"), std::string::npos);
+        }
+    }
+
+    // Mid-stream corruption after a live \r redraw must emit '\n' before the error.
+    ASSERT_EQ(run("-c " + orig + " > " + gz), 0);
+    std::string member = read_file_content(gz), two = member + member;
+    two.back() ^= 0xff;
+    write_file(bad, two);
+    std::string out = run_pty(80, {PIGZPP_BIN_PATH, "-v", "-dc", "-p", "1", bad.c_str()}, 550);
+    ASSERT_NE(out.find('\r'), std::string::npos);
+    size_t err_pos = out.rfind("pigzpp: ");
+    ASSERT_NE(err_pos, std::string::npos);
+    EXPECT_EQ(out[err_pos - 1], '\n');
+}
+#endif

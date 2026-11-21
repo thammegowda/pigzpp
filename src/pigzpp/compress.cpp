@@ -360,6 +360,7 @@ size_t Compressor::compress_buffer(const uint8_t* data, size_t size, uint8_t** o
 }
 
 std::vector<uint8_t> Compressor::direct_compress(const uint8_t* data, size_t size) {
+    ProgressReporter progress(cfg_);
     z_stream zs{};
     // Gzip = windowBits 15+16; zlib = 15; raw deflate = -15.
     const int window_bits = (cfg_.form == Format::Zlib) ? 15
@@ -398,12 +399,14 @@ std::vector<uint8_t> Compressor::direct_compress(const uint8_t* data, size_t siz
     }
     out.resize(zs.total_out);
     deflateEnd(&zs);
+    progress(size, out.size(), true);
     return out;
 }
 
 // ---- Single-threaded compression ----
 
 void Compressor::single_compress(int in_fd, int out_fd) {
+    ProgressReporter progress(cfg_);
     // Write header
     size_t head = put_header(out_fd, cfg_);
 
@@ -440,6 +443,7 @@ void Compressor::single_compress(int in_fd, int out_fd) {
             if (out_pos > 0) {
                 clen += writen(out_fd, outbuf.data(), out_pos);
                 out_pos = 0;
+                progress(ulen, head + clen);
             }
         };
 
@@ -500,7 +504,8 @@ void Compressor::single_compress(int in_fd, int out_fd) {
         }
 
         flush_output();
-        put_trailer(out_fd, cfg_, ulen, clen, check_val, head);
+        size_t tail = put_trailer(out_fd, cfg_, ulen, clen, check_val, head);
+        progress(ulen, head + clen + tail, true);
         return;
     }
 #endif // PIGZPP_USE_ISAL
@@ -538,6 +543,7 @@ void Compressor::single_compress(int in_fd, int out_fd) {
         if (out_pos > 0) {
             clen += writen(out_fd, out.data(), out_pos);
             out_pos = 0;
+            progress(ulen, head + clen);
         }
     };
 
@@ -695,12 +701,14 @@ void Compressor::single_compress(int in_fd, int out_fd) {
     deflateEnd(&strm);
 
     // Write trailer
-    put_trailer(out_fd, cfg_, ulen, clen, check_val, head);
+    size_t tail = put_trailer(out_fd, cfg_, ulen, clen, check_val, head);
+    progress(ulen, head + clen + tail, true);
 }
 
 // ---- Parallel compression ----
 
 void Compressor::parallel_compress(int in_fd, int out_fd, MemIO* mem) {
+    ProgressReporter progress(cfg_);
     // Buffer pools
     BufferPool in_pool(cfg_.block, inbufs(cfg_.procs));
     BufferPool out_pool(outpool(cfg_.block), -1);
@@ -991,6 +999,7 @@ void Compressor::parallel_compress(int in_fd, int out_fd, MemIO* mem) {
             // Write compressed data
             write_sink(mem, out_fd, job->out->data(), job->out->len);
             job->out.reset(); // returns to pool via custom deleter
+            progress(ulen, head + clen);
 
             // Wait for check value (spin-yield: fast because CRC runs
             // in parallel with the write above)
@@ -1140,12 +1149,15 @@ void Compressor::parallel_compress(int in_fd, int out_fd, MemIO* mem) {
     write_thread.join();
 
     // Write trailer
+    size_t tail = 0;
     if (mem) {
         std::vector<unsigned char> tlr = build_trailer_simple(cfg_, ulen, check_val);
         write_sink(mem, out_fd, tlr.data(), tlr.size());
+        tail = tlr.size();
     } else {
-        put_trailer(out_fd, cfg_, ulen, clen, check_val, head);
+        tail = put_trailer(out_fd, cfg_, ulen, clen, check_val, head);
     }
+    progress(ulen, head + clen + tail, true);
 }
 
 } // namespace pigzpp

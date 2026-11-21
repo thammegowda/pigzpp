@@ -269,6 +269,31 @@ pigzpp -p 8 -6 --engine zlib -c file.txt > file.gz # zlib-ng backend (best ratio
 pigzpp -p 8 -6 --engine isal -c file.txt > file.gz # ISA-L backend (fastest, default)
 ```
 
+With `-v`, compression and decompression (`-d`, `-t`) progress goes to stderr,
+never stdout. Terminal updates are limited to once per 500 ms; redirected stderr
+gets one final summary. Sizes use compact binary units (`KiB`, `MiB`, `GiB`).
+The display checks stderr's terminal width and drops byte counts, then speed,
+to fit narrower windows. Inline redraws leave the last column unused and erase
+leftover text with spaces. If the width is unknown or even the percentage won't
+fit, only a final summary is printed.
+
+### C++ progress
+
+Use `pigzpp::Progress` (from `pigzpp/io_utils.h`, included by `pigzpp.h`) for the
+built-in formatter—writing to `stderr` by default (never `stdout`), or redirected
+to any `FILE*` or custom `Progress::Sink` (`std::function<void(std::string_view)>`):
+
+```cpp
+pigzpp::Config cfg;
+pigzpp::Progress progress(total_bytes); // defaults to stderr; or pass FILE* / Sink
+progress.attach(cfg);                   // 500 ms on TTY, final-only otherwise
+pigzpp::Compressor(cfg).compress(in_fd, out_fd);
+progress.finish();
+```
+
+For raw numbers without formatting, set `cfg.progress` (`(bytes_in, bytes_out)`)
+and optional `cfg.progress_interval` directly; completion is always reported.
+
 ### Python
 
 ```python

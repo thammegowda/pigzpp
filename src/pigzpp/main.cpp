@@ -8,16 +8,12 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
-#include <chrono>
-#include <condition_variable>
 #include <cstdio>
-#include <memory>
-#include <mutex>
-#include <thread>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <signal.h>
 #include <string>
 #include <string_view>
@@ -36,8 +32,13 @@ using namespace pigzpp;
 static const char* VERSION_STR = "pigzpp " PIGZPP_VERSION " (based on pigz 2.8)";
 static std::string g_outf; // for signal handler cleanup
 static int g_outd = -1;
+static std::atomic<const Progress*> g_progress{nullptr};
 
 static void cut_short(int) {
+    if (const Progress* p = g_progress.load(std::memory_order_relaxed); p && p->active()) {
+        (void) platform::write(2, "\n", 1);
+        g_progress.store(nullptr, std::memory_order_relaxed);
+    }
     if (g_outd != -1 && g_outd != 1) {
         platform::unlink(g_outf.c_str());
         g_outd = -1;
@@ -162,66 +163,6 @@ static void copymeta(const std::string& from, const std::string& to) {
     ::utimes(to.c_str(), times);
 #endif
 }
-
-// Reports compression progress on stderr by polling the file offsets of the
-// input and output descriptors from a helper thread.
-class Progress {
-public:
-    Progress(int ind, int outd, uint64_t total)
-        : ind_(ind), outd_(outd), total_(total),
-          start_(std::chrono::steady_clock::now()),
-          thread_([this] { run(); }) {}
-    ~Progress() {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            stop_ = true;
-        }
-        cv_.notify_one();
-        thread_.join();
-        print(true);
-    }
-private:
-    void run() {
-        std::unique_lock<std::mutex> lock(mutex_);
-        while (!cv_.wait_for(lock, std::chrono::milliseconds(200), [this] { return stop_; }))
-            print(false);
-    }
-    // Format with the given decimals and a space as thousands separator.
-    static std::string fmt(double v, int decimals) {
-        char buf[64];
-        std::snprintf(buf, sizeof buf, "%.*f", decimals, v);
-        std::string s = buf;
-        size_t digits = s.find('.');
-        if (digits == std::string::npos) digits = s.size();
-        for (size_t i = digits; i > 3; i -= 3)
-            s.insert(i - 3, " ");
-        return s;
-    }
-    void print(bool last) {
-        constexpr double MB = 1024.0 * 1024.0;
-        int64_t r = platform::seek(ind_, 0, SEEK_CUR);
-        int64_t w = platform::seek(outd_, 0, SEEK_CUR);
-        double read = r < 0 ? 0.0 : static_cast<double>(r);
-        double wrote = w < 0 ? 0.0 : static_cast<double>(w);
-        double secs = std::chrono::duration<double>(
-            std::chrono::steady_clock::now() - start_).count();
-        double pct = total_ > 0 ? std::min(100.0, 100.0 * read / static_cast<double>(total_)) : 100.0;
-        double rate = secs > 0 ? read / MB / secs : 0.0;
-        std::fprintf(stderr, "\r%.1f%% [total: %s Mb | read: %s Mb | write: %s Mb | %s Mb/s]%s",
-                     pct, fmt(static_cast<double>(total_) / MB, 1).c_str(),
-                     fmt(read / MB, 1).c_str(), fmt(wrote / MB, 1).c_str(),
-                     fmt(rate, 0).c_str(), last ? "\n" : "");
-        std::fflush(stderr);
-    }
-
-    int ind_, outd_;
-    uint64_t total_;
-    std::chrono::steady_clock::time_point start_;
-    std::mutex mutex_;
-    std::condition_variable cv_;
-    bool stop_ = false;
-    std::thread thread_; // declared last: starts after the other members
-};
 
 // Process a single file (or stdin if path is empty).
 static void process(const std::string& path, Config& cfg) {
@@ -369,24 +310,28 @@ static void process(const std::string& path, Config& cfg) {
     if (cfg.verbosity > 1)
         std::cerr << "pigzpp: processing " << inf << "\n";
 
+    std::optional<Progress> progress;
     try {
-        if (cfg.mode == Mode::Compress) {
-            Compressor comp(cfg);
-            std::unique_ptr<Progress> progress;
-            platform::FileStat progress_stat{};
-            if (cfg.verbosity > 1 && !is_stdin && !cfg.pipeout && ind > 0 && outd > 1 &&
-                 platform::fstat(ind, &progress_stat) == 0 && platform::is_regular(progress_stat))
-                 progress = std::make_unique<Progress>(ind, outd, static_cast<uint64_t>(progress_stat.st_size));
-            comp.compress(ind, outd);
-            progress.reset();
-        } else if (cfg.mode == Mode::Decompress || cfg.mode == Mode::Test) {
-            Decompressor decomp(cfg);
-            decomp.decompress(ind, outd);
-        } else if (cfg.mode == Mode::List) {
-            Decompressor decomp(cfg);
-            decomp.list(ind);
+        if (cfg.mode == Mode::List) {
+            Decompressor(cfg).list(ind);
+        } else {
+            Config pcfg = cfg; // the progress callback must not outlive this call
+            platform::FileStat ist{};
+            if (cfg.verbosity > 1 && platform::fstat(ind, &ist) == 0 && platform::is_regular(ist)) {
+                progress.emplace(static_cast<uint64_t>(ist.st_size));
+                progress->attach(pcfg);
+                g_progress.store(&*progress, std::memory_order_relaxed);
+            }
+            if (cfg.mode == Mode::Compress)
+                Compressor(pcfg).compress(ind, outd);
+            else
+                Decompressor(pcfg).decompress(ind, outd);
+            g_progress.store(nullptr, std::memory_order_relaxed);
+            if (progress) progress->finish();
         }
     } catch (const std::exception& e) {
+        g_progress.store(nullptr, std::memory_order_relaxed);
+        progress.reset();
         std::cerr << "pigzpp: " << inf << ": " << e.what() << "\n";
         if (outd > 1) {
             platform::close(outd);
@@ -421,6 +366,7 @@ int pigzpp_cli_main(int argc, char** argv) {
     std::vector<std::string> files;
 
     signal(SIGINT, cut_short);
+    signal(SIGTERM, cut_short);
 
     // Check invoked name
     std::string prog = argv[0];

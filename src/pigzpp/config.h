@@ -3,9 +3,11 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <functional>
 #include <string>
 #include <thread>
 
@@ -136,6 +138,15 @@ struct Config {
 
     // Zopfli options.
     ZopfliOptions zopts{};
+
+    // Optional progress callback: (bytes consumed, bytes produced) so far, i.e.
+    // uncompressed in / compressed out when compressing, and compressed in /
+    // decompressed out when decompressing. Calls are serialized, on the caller
+    // or write thread; must not throw. Completion is always reported.
+    std::function<void(uint64_t, uint64_t)> progress;
+
+    // Minimum time between intermediate callbacks; <= 0 disables throttling.
+    std::chrono::milliseconds progress_interval{0};
 
     Config() {
         // Check env vars for thread limit: PIGZPP_THREADS, PIGZ_THREADS

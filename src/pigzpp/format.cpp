@@ -154,14 +154,14 @@ std::vector<unsigned char> build_trailer_simple(const Config& cfg,
     return tlr;
 }
 
-void put_trailer(int fd, const Config& cfg,
-                 uint64_t ulen, uint64_t clen,
-                 unsigned long check, size_t head) {
+size_t put_trailer(int fd, const Config& cfg,
+                   uint64_t ulen, uint64_t clen,
+                   unsigned long check, size_t head) {
     std::vector<unsigned char> tlr;
 
     if (cfg.form == Format::Raw) {
         // Bare DEFLATE stream: no trailer.
-        return;
+        return 0;
     }
 
     if (cfg.form == Format::Zip) {
@@ -253,16 +253,19 @@ void put_trailer(int fd, const Config& cfg,
         put_le(tlr, 0, 2);
 
         writen(fd, tlr.data(), tlr.size());
+        return desc_len + cent_len + tlr.size();
     }
     else if (cfg.form == Format::Zlib) {
         // Big-endian Adler-32
         put_be(tlr, check, 4);
         writen(fd, tlr.data(), tlr.size());
+        return tlr.size();
     }
     else { // Gzip
         put_le(tlr, check, 4);
         put_le(tlr, ulen & LOW32, 4);
         writen(fd, tlr.data(), tlr.size());
+        return tlr.size();
     }
 }
 
