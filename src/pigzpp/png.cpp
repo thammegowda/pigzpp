@@ -373,6 +373,188 @@ void unfilter_row(
     }
 }
 
+
+struct Header {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint8_t bit_depth = 0;
+    uint8_t color_type = 0;
+    bool interlaced = false;
+};
+
+Header parse_header(const uint8_t* data) {
+    Header header{read_be32(data), read_be32(data + 4), data[8], data[9], data[12] == 1};
+    if (header.width == 0 || header.height == 0 || header.width > INT32_MAX || header.height > INT32_MAX)
+        throw std::runtime_error("invalid PNG dimensions");
+    if (data[10] != 0 || data[11] != 0 || data[12] > 1)
+        throw std::runtime_error("unsupported PNG format");
+    const auto depth = header.bit_depth;
+    bool valid = false;
+    switch (header.color_type) {
+    case 0: valid = depth == 1 || depth == 2 || depth == 4 || depth == 8 || depth == 16; break;
+    case 3: valid = depth == 1 || depth == 2 || depth == 4 || depth == 8; break;
+    case 2:
+    case 4:
+    case 6: valid = depth == 8 || depth == 16; break;
+    default: throw std::runtime_error("unsupported PNG color type");
+    }
+    if (!valid)
+        throw std::runtime_error("unsupported PNG bit depth");
+    return header;
+}
+
+uint8_t samples_per_pixel(uint8_t color_type) {
+    switch (color_type) {
+    case 2: return 3;
+    case 4: return 2;
+    case 6: return 4;
+    default: return 1;
+    }
+}
+
+size_t packed_row_size(uint32_t width, const Header& header) {
+    return (static_cast<size_t>(width) * samples_per_pixel(header.color_type) * header.bit_depth + 7) / 8;
+}
+
+struct Pass {
+    uint32_t x0, y0, dx, dy;
+};
+
+constexpr std::array<Pass, 7> ADAM7{{
+    {0, 0, 8, 8}, {4, 0, 8, 8}, {0, 4, 4, 8}, {2, 0, 4, 4}, {0, 2, 2, 4}, {1, 0, 2, 2}, {0, 1, 1, 2},
+}};
+
+uint32_t pass_extent(uint32_t size, uint32_t start, uint32_t step) {
+    return size > start ? (size - start + step - 1) / step : 0;
+}
+
+// Expands PNG samples of any legal depth/colour type to 8-bit gray, gray+alpha, RGB or RGBA.
+class SampleExpander {
+public:
+    SampleExpander(const Header& header, const std::vector<uint8_t>& palette,
+                   const std::vector<uint8_t>& transparency)
+        : header_(header), palette_(palette), transparency_(transparency) {
+        const auto type = header.color_type;
+        if (type == 3) {
+            if (palette.empty())
+                throw std::runtime_error("PNG palette image has no PLTE chunk");
+            if (transparency.size() > palette.size() / 3)
+                throw std::runtime_error("invalid PNG tRNS chunk");
+            channels_ = transparency.empty() ? 3 : 4;
+        } else if (type == 0 || type == 2) {
+            const size_t key_size = type == 0 ? 2 : 6;
+            if (!transparency.empty() && transparency.size() != key_size)
+                throw std::runtime_error("invalid PNG tRNS chunk");
+            has_key_ = !transparency.empty();
+            channels_ = static_cast<uint8_t>(samples_per_pixel(type) + (has_key_ ? 1 : 0));
+        } else {
+            channels_ = samples_per_pixel(type);
+        }
+    }
+
+    uint8_t channels() const { return channels_; }
+
+    void expand(const uint8_t* row, uint32_t index, uint8_t* output) const {
+        const auto type = header_.color_type;
+        if (type == 3) {
+            const auto entry = sample(row, index);
+            if (entry * 3 >= palette_.size())
+                throw std::runtime_error("PNG palette index out of range");
+            std::copy_n(palette_.data() + entry * 3, 3, output);
+            if (channels_ == 4)
+                output[3] = entry < transparency_.size() ? transparency_[entry] : 255;
+            return;
+        }
+        const auto count = samples_per_pixel(type);
+        bool keyed = has_key_;
+        for (uint8_t channel = 0; channel < count; ++channel) {
+            const auto value = sample(row, index * count + channel);
+            if (keyed)
+                keyed = value == (static_cast<uint32_t>(transparency_[channel * 2]) << 8 | transparency_[channel * 2 + 1]);
+            output[channel] = to_byte(value);
+        }
+        if (has_key_)
+            output[count] = keyed ? 0 : 255;
+    }
+
+private:
+    uint32_t sample(const uint8_t* row, size_t sample_index) const {
+        const auto depth = header_.bit_depth;
+        if (depth == 8)
+            return row[sample_index];
+        if (depth == 16)
+            return static_cast<uint32_t>(row[sample_index * 2]) << 8 | row[sample_index * 2 + 1];
+        const auto bit = sample_index * depth;
+        const auto shift = 8 - depth - bit % 8;
+        return (row[bit / 8] >> shift) & ((1U << depth) - 1);
+    }
+
+    uint8_t to_byte(uint32_t value) const {
+        switch (header_.bit_depth) {
+        case 16: return static_cast<uint8_t>(value >> 8);
+        case 8: return static_cast<uint8_t>(value);
+        default: return static_cast<uint8_t>(value * 255 / ((1U << header_.bit_depth) - 1));
+        }
+    }
+
+    const Header& header_;
+    const std::vector<uint8_t>& palette_;
+    const std::vector<uint8_t>& transparency_;
+    uint8_t channels_ = 0;
+    bool has_key_ = false;
+};
+
+Image decode_pixels(
+    const Header& header,
+    const std::vector<uint8_t>& palette,
+    const std::vector<uint8_t>& transparency,
+    const std::vector<uint8_t>& compressed
+) {
+    const SampleExpander expander(header, palette, transparency);
+    const std::array<Pass, 1> single{{{0, 0, 1, 1}}};
+    const Pass* passes = header.interlaced ? ADAM7.data() : single.data();
+    const size_t pass_count = header.interlaced ? ADAM7.size() : single.size();
+
+    size_t scanline_size = 0;
+    for (size_t index = 0; index < pass_count; ++index) {
+        const auto& pass = passes[index];
+        const auto width = pass_extent(header.width, pass.x0, pass.dx);
+        const auto height = pass_extent(header.height, pass.y0, pass.dy);
+        if (width != 0 && height != 0)
+            scanline_size += (packed_row_size(width, header) + 1) * height;
+    }
+    std::vector<uint8_t> scanlines = zlib_decompress(compressed.data(), compressed.size(), scanline_size);
+
+    const auto channels = expander.channels();
+    const size_t bytes_per_pixel = std::max<size_t>(
+        1, static_cast<size_t>(samples_per_pixel(header.color_type)) * header.bit_depth / 8);
+    std::vector<uint8_t> pixels(static_cast<size_t>(header.width) * header.height * channels);
+    const uint8_t* source = scanlines.data();
+    for (size_t index = 0; index < pass_count; ++index) {
+        const auto& pass = passes[index];
+        const auto width = pass_extent(header.width, pass.x0, pass.dx);
+        const auto height = pass_extent(header.height, pass.y0, pass.dy);
+        if (width == 0 || height == 0)
+            continue;
+        const auto row_bytes = packed_row_size(width, header);
+        std::vector<uint8_t> previous;
+        std::vector<uint8_t> current(row_bytes);
+        for (uint32_t row = 0; row < height; ++row) {
+            unfilter_row(source[0], source + 1, previous.empty() ? nullptr : previous.data(), row_bytes,
+                         bytes_per_pixel, current.data());
+            source += row_bytes + 1;
+            const size_t y = pass.y0 + static_cast<size_t>(row) * pass.dy;
+            for (uint32_t column = 0; column < width; ++column) {
+                const size_t x = pass.x0 + static_cast<size_t>(column) * pass.dx;
+                expander.expand(current.data(), column, pixels.data() + (y * header.width + x) * channels);
+            }
+            previous.swap(current);
+            current.resize(row_bytes);
+        }
+    }
+    return Image{header.width, header.height, channels, std::move(pixels)};
+}
+
 } // namespace
 
 uint8_t png_color_type(uint8_t channels) {
@@ -547,18 +729,18 @@ Image decode(const uint8_t* png_data, size_t png_size) {
     if (!std::equal(PNG_SIGNATURE.begin(), PNG_SIGNATURE.end(), png_data))
         throw std::runtime_error("invalid PNG signature");
 
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint8_t channels = 0;
+    Header header;
     bool seen_ihdr = false;
     bool seen_iend = false;
+    std::vector<uint8_t> palette;
+    std::vector<uint8_t> transparency;
     std::vector<uint8_t> compressed;
 
     size_t offset = PNG_SIGNATURE.size();
     while (offset + 12 <= png_size) {
         uint32_t chunk_size = read_be32(png_data + offset);
         offset += 4;
-        if (offset + 4 + chunk_size + 4 > png_size)
+        if (chunk_size > png_size - offset || png_size - offset - chunk_size < 8)
             throw std::runtime_error("truncated PNG chunk");
         const uint8_t* chunk_type = png_data + offset;
         offset += 4;
@@ -579,26 +761,14 @@ Image decode(const uint8_t* png_data, size_t png_size) {
                 throw std::runtime_error("duplicate PNG IHDR chunk");
             if (chunk_size != 13)
                 throw std::runtime_error("invalid PNG IHDR size");
-            width = read_be32(chunk_data);
-            height = read_be32(chunk_data + 4);
-            uint8_t bit_depth = chunk_data[8];
-            uint8_t color_type = chunk_data[9];
-            uint8_t compression_method = chunk_data[10];
-            uint8_t filter_method = chunk_data[11];
-            uint8_t interlace_method = chunk_data[12];
-            if (bit_depth != 8 || compression_method != 0 || filter_method != 0 || interlace_method != 0)
-                throw std::runtime_error("unsupported PNG format");
-            if (color_type == 0)
-                channels = 1;
-            else if (color_type == 4)
-                channels = 2;
-            else if (color_type == 2)
-                channels = 3;
-            else if (color_type == 6)
-                channels = 4;
-            else
-                throw std::runtime_error("unsupported PNG color type");
+            header = parse_header(chunk_data);
             seen_ihdr = true;
+        } else if (type == "PLTE") {
+            if (chunk_size == 0 || chunk_size % 3 != 0 || chunk_size / 3 > 256 || !palette.empty())
+                throw std::runtime_error("invalid PNG PLTE chunk");
+            palette.assign(chunk_data, chunk_data + chunk_size);
+        } else if (type == "tRNS") {
+            transparency.assign(chunk_data, chunk_data + chunk_size);
         } else if (type == "IDAT") {
             compressed.insert(compressed.end(), chunk_data, chunk_data + chunk_size);
         } else if (type == "IEND") {
@@ -613,20 +783,7 @@ Image decode(const uint8_t* png_data, size_t png_size) {
 
     if (!seen_ihdr || !seen_iend)
         throw std::runtime_error("incomplete PNG data");
-
-    size_t row_bytes = static_cast<size_t>(width) * channels;
-    size_t scanline_size = (row_bytes + 1) * static_cast<size_t>(height);
-    std::vector<uint8_t> scanlines = zlib_decompress(compressed.data(), compressed.size(), scanline_size);
-    std::vector<uint8_t> pixels(row_bytes * static_cast<size_t>(height));
-
-    for (uint32_t row_index = 0; row_index < height; ++row_index) {
-        const uint8_t* source = scanlines.data() + static_cast<size_t>(row_index) * (row_bytes + 1);
-        uint8_t* row = pixels.data() + static_cast<size_t>(row_index) * row_bytes;
-        const uint8_t* previous_row = row_index == 0 ? nullptr : row - row_bytes;
-        unfilter_row(source[0], source + 1, previous_row, row_bytes, channels, row);
-    }
-
-    return Image{width, height, channels, std::move(pixels)};
+    return decode_pixels(header, palette, transparency, compressed);
 }
 
 Image load(const std::string& path) {
