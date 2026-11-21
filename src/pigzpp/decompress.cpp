@@ -139,6 +139,14 @@ struct InflateContext {
     unsigned long out_check;
     uint64_t out_tot;
     int procs;
+    ProgressReporter* progress;
+    uint64_t out_done; // output of earlier gzip members
+
+    // Report (compressed bytes read, decompressed bytes produced) so far.
+    void report() {
+        (*progress)(reader->total() - reader->left(),
+                    out_done + (par_out ? par_out->out_tot : out_tot));
+    }
 };
 
 // Callback: provide input for inflateBack.
@@ -165,16 +173,14 @@ static int outb_cb(void* desc, unsigned char* buf, unsigned len) {
     if (ctx->procs > 1 && ctx->par_out) {
         // Parallel path: hand off to write+check threads
         ctx->par_out->push(buf, len);
-        return 0;
-    }
-
-    // Sequential path
-    if (len) {
+    } else if (len) {
+        // Sequential path
         if (!ctx->testing)
             writen(ctx->out_fd, buf, len);
         ctx->out_check = check(ctx->form, ctx->out_check, buf, len);
         ctx->out_tot += len;
     }
+    ctx->report();
     return 0;
 }
 
@@ -259,6 +265,7 @@ std::vector<uint8_t> Decompressor::direct_decompress(const uint8_t* data, size_t
     }
     out.resize(out_pos);
     inflateEnd(&zs);
+    ProgressReporter{cfg_}(size, out_pos, true);
     return out;
 }
 
@@ -282,6 +289,8 @@ void Decompressor::infchk(int in_fd, int out_fd) {
 
     // Set up parallel output handler (reused across gzip members)
     ParallelOutput par_out;
+    ProgressReporter progress(cfg_);
+    uint64_t out_done = 0;
 
     do {
         uint64_t in_tot_start = reader.total() - reader.left();
@@ -295,6 +304,8 @@ void Decompressor::infchk(int in_fd, int out_fd) {
         ctx.out_check = check(form, 0L, Z_NULL, 0);
         ctx.out_tot = 0;
         ctx.procs = cfg_.procs;
+        ctx.progress = &progress;
+        ctx.out_done = out_done;
 
         // Start parallel threads for this member
         if (use_parallel)
@@ -325,6 +336,7 @@ void Decompressor::infchk(int in_fd, int out_fd) {
                     ctx.out_check = check(ctx.form, ctx.out_check, buf, len);
                     ctx.out_tot += len;
                 }
+                ctx.report();
             };
 
             for (;;) {
@@ -421,6 +433,7 @@ void Decompressor::infchk(int in_fd, int out_fd) {
             ctx.out_check = par_out.out_check;
             ctx.out_tot = par_out.out_tot;
         }
+        out_done += ctx.out_tot;
 
         uint64_t clen = (reader.total() - reader.left()) - in_tot_start;
 
@@ -497,6 +510,7 @@ void Decompressor::infchk(int in_fd, int out_fd) {
             }
         }
     } while (more_entries);
+    progress(reader.total() - reader.left(), out_done, true);
 }
 
 } // namespace pigzpp

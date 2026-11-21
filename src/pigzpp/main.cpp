@@ -6,11 +6,14 @@
 #include "platform.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <signal.h>
 #include <string>
 #include <string_view>
@@ -29,8 +32,13 @@ using namespace pigzpp;
 static const char* VERSION_STR = "pigzpp " PIGZPP_VERSION " (based on pigz 2.8)";
 static std::string g_outf; // for signal handler cleanup
 static int g_outd = -1;
+static std::atomic<const Progress*> g_progress{nullptr};
 
 static void cut_short(int) {
+    if (const Progress* p = g_progress.load(std::memory_order_relaxed); p && p->active()) {
+        (void) platform::write(2, "\n", 1);
+        g_progress.store(nullptr, std::memory_order_relaxed);
+    }
     if (g_outd != -1 && g_outd != 1) {
         platform::unlink(g_outf.c_str());
         g_outd = -1;
@@ -299,18 +307,31 @@ static void process(const std::string& path, Config& cfg) {
     g_outf = outf;
     g_outd = outd;
 
+    if (cfg.verbosity > 1)
+        std::cerr << "pigzpp: processing " << inf << "\n";
+
+    std::optional<Progress> progress;
     try {
-        if (cfg.mode == Mode::Compress) {
-            Compressor comp(cfg);
-            comp.compress(ind, outd);
-        } else if (cfg.mode == Mode::Decompress || cfg.mode == Mode::Test) {
-            Decompressor decomp(cfg);
-            decomp.decompress(ind, outd);
-        } else if (cfg.mode == Mode::List) {
-            Decompressor decomp(cfg);
-            decomp.list(ind);
+        if (cfg.mode == Mode::List) {
+            Decompressor(cfg).list(ind);
+        } else {
+            Config pcfg = cfg; // the progress callback must not outlive this call
+            platform::FileStat ist{};
+            if (cfg.verbosity > 1 && platform::fstat(ind, &ist) == 0 && platform::is_regular(ist)) {
+                progress.emplace(static_cast<uint64_t>(ist.st_size));
+                progress->attach(pcfg);
+                g_progress.store(&*progress, std::memory_order_relaxed);
+            }
+            if (cfg.mode == Mode::Compress)
+                Compressor(pcfg).compress(ind, outd);
+            else
+                Decompressor(pcfg).decompress(ind, outd);
+            g_progress.store(nullptr, std::memory_order_relaxed);
+            if (progress) progress->finish();
         }
     } catch (const std::exception& e) {
+        g_progress.store(nullptr, std::memory_order_relaxed);
+        progress.reset();
         std::cerr << "pigzpp: " << inf << ": " << e.what() << "\n";
         if (outd > 1) {
             platform::close(outd);
@@ -345,6 +366,7 @@ int pigzpp_cli_main(int argc, char** argv) {
     std::vector<std::string> files;
 
     signal(SIGINT, cut_short);
+    signal(SIGTERM, cut_short);
 
     // Check invoked name
     std::string prog = argv[0];

@@ -4,6 +4,8 @@
 #include "compress.h"
 #include "decompress.h"
 #include "config.h"
+#include "platform.h"
+#include "../../tests/test_support.h"
 
 #include <chrono>
 #include <cstdio>
@@ -13,7 +15,6 @@
 #include <fstream>
 #include <iostream>
 #include <string>
-#include <unistd.h>
 
 namespace fs = std::filesystem;
 using namespace pigzpp;
@@ -32,11 +33,9 @@ static std::string generate_data(size_t mb) {
 }
 
 static void bench_compress(const std::string& data, int level, int procs) {
-    std::filesystem::create_directories("tmp");
-    char tmpl[] = "tmp/pigzpp_bench_XXXXXX";
-    char* dir = mkdtemp(tmpl);
-    std::string orig = std::string(dir) + "/data.txt";
-    std::string gz = std::string(dir) + "/data.txt.gz";
+    std::string dir = test_support::make_temp_dir("pigzpp_bench_");
+    std::string orig = dir + "/data.txt";
+    std::string gz = dir + "/data.txt.gz";
 
     {
         std::ofstream f(orig, std::ios::binary);
@@ -48,12 +47,12 @@ static void bench_compress(const std::string& data, int level, int procs) {
     cfg.procs = procs;
 
     auto start = Clock::now();
-    int in_fd = ::open(orig.c_str(), O_RDONLY);
-    int out_fd = ::open(gz.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+    int in_fd = platform::open(orig.c_str(), O_RDONLY);
+    int out_fd = platform::open(gz.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
     Compressor comp(cfg);
     comp.compress(in_fd, out_fd);
-    ::close(in_fd);
-    ::close(out_fd);
+    platform::close(in_fd);
+    platform::close(out_fd);
     auto end = Clock::now();
 
     double secs = std::chrono::duration<double>(end - start).count();
@@ -67,14 +66,14 @@ static void bench_compress(const std::string& data, int level, int procs) {
     // Decompress benchmark
     start = Clock::now();
     std::string restored = std::string(dir) + "/restored.txt";
-    in_fd = ::open(gz.c_str(), O_RDONLY);
-    out_fd = ::open(restored.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+    in_fd = platform::open(gz.c_str(), O_RDONLY);
+    out_fd = platform::open(restored.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
     Config dcfg;
     dcfg.mode = Mode::Decompress;
     Decompressor decomp(dcfg);
     decomp.decompress(in_fd, out_fd);
-    ::close(in_fd);
-    ::close(out_fd);
+    platform::close(in_fd);
+    platform::close(out_fd);
     end = Clock::now();
 
     secs = std::chrono::duration<double>(end - start).count();

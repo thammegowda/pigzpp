@@ -32,10 +32,10 @@ std::vector<unsigned char> build_trailer_simple(const Config& cfg,
                                                 uint64_t ulen,
                                                 unsigned long check);
 
-// Write a gzip, zlib, or zip trailer to fd.
-void put_trailer(int fd, const Config& cfg,
-                 uint64_t ulen, uint64_t clen,
-                 unsigned long check, size_t head);
+// Write a gzip, zlib, or zip trailer to fd. Returns trailer bytes written.
+size_t put_trailer(int fd, const Config& cfg,
+                   uint64_t ulen, uint64_t clen,
+                   unsigned long check, size_t head);
 
 // Header info returned from parsing.
 struct HeaderInfo {

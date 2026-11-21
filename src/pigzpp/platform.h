@@ -23,6 +23,7 @@
 #include <io.h>
 #include <process.h>
 #else
+#include <sys/ioctl.h>
 #include <sys/types.h>
 #include <unistd.h>
 #endif
@@ -193,6 +194,22 @@ inline int isatty(int fd) {
     return ::_isatty(fd);
 #else
     return ::isatty(fd);
+#endif
+}
+
+// Zero means the descriptor is not a terminal or its width is unavailable.
+inline int terminal_width(int fd) {
+#if defined(_WIN32)
+    CONSOLE_SCREEN_BUFFER_INFO info{};
+    HANDLE handle = reinterpret_cast<HANDLE>(::_get_osfhandle(fd));
+    return GetConsoleScreenBufferInfo(handle, &info)
+        ? info.srWindow.Right - info.srWindow.Left + 1 : 0;
+#elif defined(TIOCGWINSZ)
+    struct winsize size{};
+    return ::ioctl(fd, TIOCGWINSZ, &size) == 0 ? size.ws_col : 0;
+#else
+    (void) fd;
+    return 0;
 #endif
 }
 

@@ -2,6 +2,9 @@
 #include "compress.h"
 #include "decompress.h"
 #include "config.h"
+#include "io_utils.h"
+#include "platform.h"
+#include "test_support.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -10,7 +13,6 @@
 #include <string>
 #include <vector>
 #include <fcntl.h>
-#include <unistd.h>
 
 namespace fs = std::filesystem;
 using namespace pigzpp;
@@ -20,11 +22,7 @@ protected:
     std::string tmp_dir;
 
     void SetUp() override {
-        fs::create_directories("tmp");
-        char tmpl[] = "tmp/pigzpp_test_XXXXXX";
-        char* dir = mkdtemp(tmpl);
-        ASSERT_NE(dir, nullptr);
-        tmp_dir = dir;
+        tmp_dir = test_support::make_temp_dir("pigzpp_test_");
     }
 
     void TearDown() override {
@@ -55,26 +53,26 @@ protected:
         Config cfg;
         cfg.level = level;
         cfg.procs = procs;
-        int in_fd = ::open(orig.c_str(), O_RDONLY);
-        int out_fd = ::open(gz.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+        int in_fd = platform::open(orig.c_str(), O_RDONLY);
+        int out_fd = platform::open(gz.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
         ASSERT_GE(in_fd, 0);
         ASSERT_GE(out_fd, 0);
         Compressor comp(cfg);
         comp.compress(in_fd, out_fd);
-        ::close(in_fd);
-        ::close(out_fd);
+        platform::close(in_fd);
+        platform::close(out_fd);
 
         // Decompress
-        in_fd = ::open(gz.c_str(), O_RDONLY);
-        out_fd = ::open(restored.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+        in_fd = platform::open(gz.c_str(), O_RDONLY);
+        out_fd = platform::open(restored.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
         ASSERT_GE(in_fd, 0);
         ASSERT_GE(out_fd, 0);
         Config dcfg;
         dcfg.mode = Mode::Decompress;
         Decompressor decomp(dcfg);
         decomp.decompress(in_fd, out_fd);
-        ::close(in_fd);
-        ::close(out_fd);
+        platform::close(in_fd);
+        platform::close(out_fd);
 
         EXPECT_EQ(read_file_content(restored), data);
     }
@@ -119,6 +117,78 @@ TEST_F(CompressDecompressTest, ParallelLarger) {
     roundtrip(data, 6, 4);
 }
 
+TEST_F(CompressDecompressTest, ProgressCallback) {
+    std::string data(600000, 'x');
+    auto orig = path("orig.txt"), gz = path("orig.txt.gz"), restored = path("restored.txt");
+    write_file(orig, data);
+
+    auto run_compress = [&](Config cfg, int* calls_out, uint64_t* in_out, uint64_t* out_out) {
+        uint64_t in = 0, out = 0;
+        int calls = 0;
+        cfg.progress = [&](uint64_t i, uint64_t o) { in = i; out = o; ++calls; };
+        int in_fd = platform::open(orig.c_str(), O_RDONLY);
+        int out_fd = platform::open(gz.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+        ASSERT_GE(in_fd, 0);
+        ASSERT_GE(out_fd, 0);
+        Compressor(cfg).compress(in_fd, out_fd);
+        platform::close(in_fd);
+        platform::close(out_fd);
+        *calls_out = calls;
+        *in_out = in;
+        *out_out = out;
+    };
+
+    for (int procs : {1, 4}) {
+        Config cfg;
+        cfg.procs = procs;
+        cfg.level = 0; // multiple output flushes even on small input
+        cfg.block = 32768;
+
+        int calls = 0;
+        uint64_t in = 0, out = 0;
+        run_compress(cfg, &calls, &in, &out);
+        EXPECT_GT(calls, 1);
+        EXPECT_EQ(in, data.size());
+        EXPECT_EQ(out, fs::file_size(gz));
+
+        // Throttled intermediate callbacks still always report final completion.
+        cfg.progress_interval = std::chrono::hours(24);
+        run_compress(cfg, &calls, &in, &out);
+        EXPECT_EQ(calls, 1);
+        EXPECT_EQ(in, data.size());
+        EXPECT_EQ(out, fs::file_size(gz));
+
+        // Decompression progress reaches compressed input and restored output sizes.
+        Config dcfg;
+        dcfg.mode = Mode::Decompress;
+        dcfg.procs = procs;
+        calls = 0;
+        dcfg.progress = [&](uint64_t i, uint64_t o) { in = i; out = o; ++calls; };
+        int in_fd = platform::open(gz.c_str(), O_RDONLY);
+        int out_fd = platform::open(restored.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+        ASSERT_GE(in_fd, 0);
+        ASSERT_GE(out_fd, 0);
+        Decompressor(dcfg).decompress(in_fd, out_fd);
+        platform::close(in_fd);
+        platform::close(out_fd);
+        EXPECT_GT(calls, 1);
+        EXPECT_EQ(in, fs::file_size(gz));
+        EXPECT_EQ(out, data.size());
+    }
+
+    // Progress sink redirection: non-TTY summary and custom-width live redraw.
+    std::string log;
+    Config scfg;
+    Progress redirected(data.size(), [&](std::string_view s) { log += s; });
+    redirected.attach(scfg);
+    uint8_t* buf = nullptr;
+    std::free((Compressor(scfg).compress_buffer(
+        reinterpret_cast<const uint8_t*>(data.data()), data.size(), &buf), buf));
+    redirected.finish();
+    EXPECT_EQ(log.find('\r'), std::string::npos);
+    EXPECT_NE(log.find("100.0% 585.9KiB/585.9KiB -> "), std::string::npos);
+}
+
 TEST_F(CompressDecompressTest, CrossCompatGzipDecompress) {
     // Compress with pigzpp, decompress with system gzip
     auto orig = path("orig.txt");
@@ -131,12 +201,12 @@ TEST_F(CompressDecompressTest, CrossCompatGzipDecompress) {
 
     Config cfg;
     cfg.level = 6;
-    int in_fd = ::open(orig.c_str(), O_RDONLY);
-    int out_fd = ::open(gz.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+    int in_fd = platform::open(orig.c_str(), O_RDONLY);
+    int out_fd = platform::open(gz.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
     Compressor comp(cfg);
     comp.compress(in_fd, out_fd);
-    ::close(in_fd);
-    ::close(out_fd);
+    platform::close(in_fd);
+    platform::close(out_fd);
 
     // Use system gzip to decompress
     std::string cmd = "gzip -d -c " + gz + " > " + restored;
@@ -159,14 +229,14 @@ TEST_F(CompressDecompressTest, CrossCompatGzipCompress) {
     int ret = system(cmd.c_str());
     ASSERT_EQ(ret, 0);
 
-    int in_fd = ::open(gz.c_str(), O_RDONLY);
-    int out_fd = ::open(restored.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+    int in_fd = platform::open(gz.c_str(), O_RDONLY);
+    int out_fd = platform::open(restored.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
     Config dcfg;
     dcfg.mode = Mode::Decompress;
     Decompressor decomp(dcfg);
     decomp.decompress(in_fd, out_fd);
-    ::close(in_fd);
-    ::close(out_fd);
+    platform::close(in_fd);
+    platform::close(out_fd);
 
     EXPECT_EQ(read_file_content(restored), data);
 }
@@ -199,19 +269,19 @@ TEST_F(CompressDecompressTest, TestMode) {
     write_file(orig, "Test integrity check data.\n");
 
     Config cfg;
-    int in_fd = ::open(orig.c_str(), O_RDONLY);
-    int out_fd = ::open(gz.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+    int in_fd = platform::open(orig.c_str(), O_RDONLY);
+    int out_fd = platform::open(gz.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
     Compressor comp(cfg);
     comp.compress(in_fd, out_fd);
-    ::close(in_fd);
-    ::close(out_fd);
+    platform::close(in_fd);
+    platform::close(out_fd);
 
-    in_fd = ::open(gz.c_str(), O_RDONLY);
+    in_fd = platform::open(gz.c_str(), O_RDONLY);
     Config tcfg;
     tcfg.mode = Mode::Test;
     Decompressor decomp(tcfg);
     EXPECT_NO_THROW(decomp.decompress(in_fd, -1));
-    ::close(in_fd);
+    platform::close(in_fd);
 }
 
 // Test thread safety: multiple Compressor/Decompressor instances in parallel
@@ -233,21 +303,21 @@ TEST_F(CompressDecompressTest, ThreadSafety) {
             Config cfg;
             cfg.procs = 1; // single-thread per instance for this test
 
-            int in_fd = ::open(orig.c_str(), O_RDONLY);
-            int out_fd = ::open(gz.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+            int in_fd = platform::open(orig.c_str(), O_RDONLY);
+            int out_fd = platform::open(gz.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
             Compressor comp(cfg);
             comp.compress(in_fd, out_fd);
-            ::close(in_fd);
-            ::close(out_fd);
+            platform::close(in_fd);
+            platform::close(out_fd);
 
-            in_fd = ::open(gz.c_str(), O_RDONLY);
-            out_fd = ::open(restored.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+            in_fd = platform::open(gz.c_str(), O_RDONLY);
+            out_fd = platform::open(restored.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
             Config dcfg;
             dcfg.mode = Mode::Decompress;
             Decompressor decomp(dcfg);
             decomp.decompress(in_fd, out_fd);
-            ::close(in_fd);
-            ::close(out_fd);
+            platform::close(in_fd);
+            platform::close(out_fd);
 
             EXPECT_EQ(read_file_content(restored), data);
         });

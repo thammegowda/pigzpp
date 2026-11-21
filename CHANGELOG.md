@@ -4,6 +4,19 @@ All notable changes to pigzpp are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/). `VERSION.txt` is the version source of truth.
 
+## [Unreleased]
+
+### Added
+
+- CLI `-v` progress reporting on `stderr` (never `stdout`) for compression and
+  decompression (`-d`, `-t`), with 500 ms terminal-width-aware inline redraws and a
+  single summary line when `stderr` is redirected (#3, thanks to @gerdus).
+- C++ progress API: `pigzpp::Config::progress` and `pigzpp::Config::progress_interval`
+  across `Compressor` and `Decompressor`, plus `pigzpp::Progress` (`io_utils.h`) for
+  formatted `stderr`, `FILE*`, or custom `Sink` output.
+- Windows MSVC build and test portability improvements across the `Makefile`, test
+  helpers, and core benchmarks (#3, @gerdus).
+
 ## [1.2.0] - 2026-11-21
 
 ### Added

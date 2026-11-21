@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "zip.h"
+#include "test_support.h"
 
 #include <cstdint>
 #include <cstdlib>
@@ -45,11 +46,7 @@ class ZipTest : public ::testing::Test {
 protected:
     std::string dir;
     void SetUp() override {
-        fs::create_directories("tmp");
-        char tmpl[] = "tmp/pigzpp_zip_XXXXXX";
-        char* d = mkdtemp(tmpl);
-        ASSERT_NE(d, nullptr);
-        dir = d;
+        dir = test_support::make_temp_dir("pigzpp_zip_");
     }
     void TearDown() override { fs::remove_all(dir); }
     std::string path(const std::string& n) { return dir + "/" + n; }
