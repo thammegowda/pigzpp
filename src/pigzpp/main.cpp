@@ -203,7 +203,6 @@ private:
         int64_t w = platform::seek(outd_, 0, SEEK_CUR);
         double read = r < 0 ? 0.0 : static_cast<double>(r);
         double wrote = w < 0 ? 0.0 : static_cast<double>(w);
-        if (last && total_ > 0) read = static_cast<double>(total_);
         double secs = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - start_).count();
         double pct = total_ > 0 ? std::min(100.0, 100.0 * read / static_cast<double>(total_)) : 100.0;
