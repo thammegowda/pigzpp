@@ -374,8 +374,10 @@ static void process(const std::string& path, Config& cfg) {
         if (cfg.mode == Mode::Compress) {
             Compressor comp(cfg);
             std::unique_ptr<Progress> progress;
-            if (cfg.verbosity > 1 && !is_stdin && !cfg.pipeout && ind > 0 && outd > 1)
-                progress = std::make_unique<Progress>(ind, outd, static_cast<uint64_t>(st.st_size));
+            platform::FileStat progress_stat{};
+            if (cfg.verbosity > 1 && !is_stdin && !cfg.pipeout && ind > 0 && outd > 1 &&
+                 platform::fstat(ind, &progress_stat) == 0 && platform::is_regular(progress_stat))
+                 progress = std::make_unique<Progress>(ind, outd, static_cast<uint64_t>(progress_stat.st_size));
             comp.compress(ind, outd);
             progress.reset();
         } else if (cfg.mode == Mode::Decompress || cfg.mode == Mode::Test) {
