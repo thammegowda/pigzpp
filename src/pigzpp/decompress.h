@@ -7,10 +7,16 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace pigzpp {
+
+// Inflate gzip/zlib into a non-overlapping destination. Returns the byte count,
+// nullopt if the output doesn't fit, or throws on invalid compressed data.
+std::optional<size_t> decompress_buffer_into(const uint8_t* data, size_t size,
+                                             uint8_t* dst, size_t dst_cap);
 
 class Decompressor {
 public:
@@ -27,9 +33,11 @@ public:
     // List contents of compressed file to stdout.
     void list(int in_fd);
 
+    // Decompress an in-memory buffer into a malloc()'d buffer transferred to the
+    // caller via `*out` (release with free()); returns the decompressed size.
+    size_t decompress_buffer(const uint8_t* data, size_t size, uint8_t** out);
+
     // Decompress an in-memory buffer, returning the decompressed bytes.
-    // Convenience wrapper around decompress() using in-memory temp fds;
-    // suitable for language bindings (e.g. WebAssembly) that pass byte arrays.
     std::vector<uint8_t> decompress_buffer(const uint8_t* data, size_t size);
 
 private:
@@ -37,10 +45,6 @@ private:
 
     // The actual inflate/check/write loop.
     void infchk(int in_fd, int out_fd);
-
-    // Direct in-memory inflate for gzip/zlib streams; avoids the temp-fd
-    // round-trip used by decompress_buffer's fallback.
-    std::vector<uint8_t> direct_decompress(const uint8_t* data, size_t size);
 };
 
 } // namespace pigzpp

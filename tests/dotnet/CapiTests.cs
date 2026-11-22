@@ -59,6 +59,33 @@ public sealed class CapiTests : IDisposable {
         Assert.Empty(Pigzpp.GzipDecompress(Pigzpp.GzipCompress(Array.Empty<byte>())));
 
     [Fact]
+    public void GzipDecompressIntoDestinationAndConcatenated() {
+        var a = Sample(4096);
+        var b = Sample(8192);
+        var gzA = Pigzpp.GzipCompress(a);
+        var gzB = Pigzpp.GzipCompress(b);
+
+        var dst = new byte[a.Length];
+        Assert.Equal(a.Length, Pigzpp.GzipDecompress(gzA, dst));
+        Assert.Equal(a, dst);
+        Assert.Throws<PigzppException>(() => Pigzpp.GzipDecompress(gzA, new byte[a.Length - 1]));
+        Assert.Throws<ArgumentException>(() => Pigzpp.GzipDecompress(gzA, gzA));
+
+        // Concatenated multi-member gzip overflows the single-member ISIZE hint
+        // and falls back cleanly to the growable C++ path.
+        var joined = new byte[gzA.Length + gzB.Length];
+        Buffer.BlockCopy(gzA, 0, joined, 0, gzA.Length);
+        Buffer.BlockCopy(gzB, 0, joined, gzA.Length, gzB.Length);
+        var expected = new byte[a.Length + b.Length];
+        Buffer.BlockCopy(a, 0, expected, 0, a.Length);
+        Buffer.BlockCopy(b, 0, expected, a.Length, b.Length);
+        Assert.Equal(expected, Pigzpp.GzipDecompress(joined));
+        dst = new byte[expected.Length];
+        Assert.Equal(expected.Length, Pigzpp.GzipDecompress(joined, dst));
+        Assert.Equal(expected, dst);
+    }
+
+    [Fact]
     public void DecompressGarbageThrows() =>
         Assert.Throws<PigzppException>(
             () => Pigzpp.GzipDecompress(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 }));

@@ -39,8 +39,11 @@ byte[] data = System.IO.File.ReadAllBytes("input.bin");
 // level: 0-9 (-1 = default); threads: <= 0 uses all cores.
 byte[] gz = Pigzpp.Pigzpp.GzipCompress(data, level: 6, threads: 4);
 
-// Accepts gzip or zlib streams.
+// Accepts gzip or zlib; a matching gzip size hint lets us decode directly into the result.
 byte[] back = Pigzpp.Pigzpp.GzipDecompress(gz);
+
+// Or decompress into a separate, reusable buffer without copying the output:
+int written = Pigzpp.Pigzpp.GzipDecompress(gz, back);
 ```
 
 ### Choose the DEFLATE engine
@@ -119,12 +122,23 @@ Compare `Pigzpp` against `.NET`'s `GZipStream` (`zlib-ng`), `LibDeflate.NET`, an
 make bench-dotnet
 ```
 
-Measured on an Intel Xeon Platinum 8573C (WSL2 Linux x64, .NET 10, 128 MiB text, L6, 8 threads):
+Measured on an Intel Xeon Platinum 8573C (WSL2 Linux x64, .NET 10, 128 MiB text).
+Best of three timed samples after a warmup. Compression uses level 6 and eight
+threads for pigzpp; the other compressors use one thread.
 
-| method | compress MB/s | ratio | decompress MB/s |
-|---|---:|---:|---:|
-| **pigzpp `isal`** | **1262** | 2.58 | 293 |
-| **pigzpp `zlib`** | **277** | 2.81 | 293 |
-| `LibDeflate.NET` (1 thread) | 54 | 2.84 | **614** |
-| `System.IO.Compression.GZipStream` (1 thread) | 17 | 2.83 | 187 |
-| `SharpZipLib` (managed C#, 1 thread) | 12 | 2.83 | 165 |
+| method | compress MB/s | ratio |
+|---|---:|---:|
+| **pigzpp `isal`** | **1127** | 2.58 |
+| **pigzpp `zlib`** | **304** | 2.81 |
+| `LibDeflate.NET` | 55 | 2.84 |
+| `System.IO.Compression.GZipStream` | 17 | 2.83 |
+| `SharpZipLib` | 12 | 2.83 |
+
+Decompression is single-threaded and uses the same gzip stream for every method.
+
+| method | decompress MB/s | into a reused buffer (MB/s) |
+|---|---:|---:|
+| `pigzpp` | 607 | 607 |
+| `LibDeflate.NET` | 608 | 651 |
+| `System.IO.Compression.GZipStream` | 160 | — |
+| `SharpZipLib` | 157 | — |

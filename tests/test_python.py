@@ -76,6 +76,11 @@ class TestCompressDecompress:
         compressed = gzip.compress(data)
         assert pigzpp.decompress(compressed, bufsize=len(data) + offset) == data
 
+    @pytest.mark.parametrize("bufsize", [0, 1, 9, 10])
+    def test_decompress_concatenated_members(self, bufsize):
+        compressed = gzip.compress(b"alpha") + gzip.compress(b"beta") + gzip.compress(b"")
+        assert pigzpp.decompress(compressed, bufsize=bufsize) == b"alphabeta"
+
     def test_compress_levels(self):
         data = b"x" * 10000
         sizes = {}

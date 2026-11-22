@@ -81,10 +81,34 @@ TEST_F(CapiFileTest, FormatsAndProgressRoundTrip) {
                     ASSERT_EQ(dec.error, nullptr);
                     EXPECT_EQ(std::string(reinterpret_cast<const char*>(dec.data), dec.size), data);
                     pigzpp_free(dec);
+
+                    std::string dst(data.size(), '\0');
+                    auto* bytes = dst.empty() ? nullptr : reinterpret_cast<uint8_t*>(dst.data());
+                    size_t written = 0;
+                    ASSERT_EQ(pigzpp_gzip_decompress_into(compressed.data(), compressed.size(),
+                        bytes, dst.size(), &written), PIGZPP_DECOMPRESS_OK);
+                    EXPECT_EQ(written, data.size());
+                    EXPECT_EQ(dst, data);
                 }
             }
         }
     }
+}
+
+TEST(CapiBufferTest, DecompressIntoReportsCapacityAndInvalidBuffers) {
+    const uint8_t input[] = {'a', 'b', 'c'};
+    auto gz = pigzpp_gzip_compress(input, sizeof(input), 6, 1, PIGZPP_ENGINE_AUTO);
+    ASSERT_EQ(gz.error, nullptr);
+    uint8_t dst[2]{};
+    size_t written = 99;
+    EXPECT_EQ(pigzpp_gzip_decompress_into(gz.data, gz.size, dst, sizeof(dst), &written),
+              PIGZPP_DECOMPRESS_OUTPUT_TOO_SMALL);
+    EXPECT_EQ(pigzpp_gzip_decompress_into(gz.data, gz.size, nullptr, sizeof(dst), &written),
+              PIGZPP_DECOMPRESS_ERROR);
+    EXPECT_EQ(pigzpp_gzip_decompress_into(gz.data, gz.size, gz.data, gz.size, &written),
+              PIGZPP_DECOMPRESS_ERROR);
+    EXPECT_EQ(written, 99u);
+    pigzpp_free(gz);
 }
 
 TEST_F(CapiFileTest, ValidationAndOverwriteSafety) {

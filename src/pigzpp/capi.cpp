@@ -88,18 +88,42 @@ pigzpp_buffer pigzpp_gzip_compress(const uint8_t* data, size_t size,
 
 pigzpp_buffer pigzpp_gzip_decompress(const uint8_t* data, size_t size,
                                      int threads) {
+    if (!data || !size)
+        return {nullptr, 0, "pigzpp: decompression failed"};
     try {
         pigzpp::Config cfg;
         cfg.form = pigzpp::Format::Gzip;
         cfg.mode = pigzpp::Mode::Decompress;
         cfg.procs = resolve_threads(threads);
         pigzpp::Decompressor dec(cfg);
-        std::vector<uint8_t> out = dec.decompress_buffer(data, size);
-        return to_c_buffer(out);
+        uint8_t* out = nullptr;
+        size_t n = dec.decompress_buffer(data, size, &out);
+        return pigzpp_buffer{out, n, nullptr};
     } catch (const std::exception&) {
         return pigzpp_buffer{nullptr, 0, "pigzpp: decompression failed"};
     } catch (...) {
         return pigzpp_buffer{nullptr, 0, "pigzpp: decompression failed (unknown)"};
+    }
+}
+
+int pigzpp_gzip_decompress_into(const uint8_t* data, size_t size,
+                               uint8_t* dst, size_t dst_cap, size_t* written) {
+    if (!data || !written || (!dst && dst_cap))
+        return PIGZPP_DECOMPRESS_ERROR;
+    if (size && dst_cap) {
+        const auto src_addr = reinterpret_cast<uintptr_t>(data);
+        const auto dst_addr = reinterpret_cast<uintptr_t>(dst);
+        if (src_addr <= dst_addr ? dst_addr - src_addr < size : src_addr - dst_addr < dst_cap)
+            return PIGZPP_DECOMPRESS_ERROR;
+    }
+    try {
+        const auto n = pigzpp::decompress_buffer_into(data, size, dst, dst_cap);
+        if (!n)
+            return PIGZPP_DECOMPRESS_OUTPUT_TOO_SMALL;
+        *written = *n;
+        return PIGZPP_DECOMPRESS_OK;
+    } catch (const std::exception&) {
+        return PIGZPP_DECOMPRESS_ERROR;
     }
 }
 

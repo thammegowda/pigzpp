@@ -31,16 +31,15 @@ static class Program {
         return fallback;
     }
 
-    static (double BestSecs, byte[] Last) BestOf(int iters, Func<byte[]> fn) {
-        byte[] last = fn(); // untimed warmup (JIT + native init)
+    static double BestOf(int iters, Func<byte[]> fn) {
         double best = double.PositiveInfinity;
         for (int i = 0; i < iters; i++) {
             var sw = Stopwatch.StartNew();
-            last = fn();
+            fn();
             double dt = sw.Elapsed.TotalSeconds;
             if (dt < best) best = dt;
         }
-        return (best, last);
+        return best;
     }
 
     static byte[] StdlibCompress(byte[] data, int level) {
@@ -124,7 +123,7 @@ static class Program {
         byte[] referenceGz = Array.Empty<byte>();
 
         foreach (var (name, run) in compressJobs) {
-            var (secs, compressed) = BestOf(iters, run);
+            byte[] compressed = run(); // warmup and validation outside the timed samples
             byte[] restored = Pigzpp.GzipDecompress(compressed);
             if (restored.Length != n || !restored.AsSpan().SequenceEqual(data)) {
                 Console.Error.WriteLine($"{name}: roundtrip FAILED");
@@ -132,7 +131,7 @@ static class Program {
             }
             if (name == "pigzpp:zlib")
                 referenceGz = compressed;
-            compResults.Add((name, (n / 1e6) / secs, compressed.Length));
+            compResults.Add((name, (n / 1e6) / BestOf(iters, run), compressed.Length));
         }
 
         compResults.Sort((a, b) => b.Mbps.CompareTo(a.Mbps));
@@ -143,21 +142,37 @@ static class Program {
                 $"{name,-16} {mbps,10:F1} {(double)n / outLen,8:F3} {outLen / (1024.0 * 1024.0),10:F1}");
         }
 
+        var sharedBuf = new byte[n];
+        using var sharedLibDeflate = new GzipDecompressor();
         var decompressJobs = new (string Name, Func<byte[]> Run)[] {
             ("stdlib:gzip", () => StdlibDecompress(referenceGz, n)),
             ("SharpZipLib", () => SharpZipDecompress(referenceGz, n)),
             ("LibDeflate.NET", () => LibDeflateDecompress(referenceGz, n)),
             ("pigzpp", () => Pigzpp.GzipDecompress(referenceGz)),
+            ("LibDeflate:into", () => {
+                var status = sharedLibDeflate.Decompress(referenceGz, sharedBuf, out int written);
+                if (status != OperationStatus.Done || written != n)
+                    throw new InvalidOperationException($"LibDeflate:into failed: {status}");
+                return sharedBuf;
+            }),
+            ("pigzpp:into", () => {
+                if (Pigzpp.GzipDecompress(referenceGz, sharedBuf) != n)
+                    throw new InvalidOperationException("pigzpp:into returned the wrong length");
+                return sharedBuf;
+            }),
         };
 
         var decResults = new List<(string Name, double Mbps)>();
         foreach (var (name, run) in decompressJobs) {
-            var (secs, restored) = BestOf(iters, run);
-            if (restored.Length != n) {
-                Console.Error.WriteLine($"{name}: decompress length mismatch");
+            byte[] restored = run();
+            if (!restored.AsSpan().SequenceEqual(data)) {
+                Console.Error.WriteLine($"{name}: decompress output mismatch");
                 return 2;
             }
-            decResults.Add((name, (n / 1e6) / secs));
+            bool reused = ReferenceEquals(restored, sharedBuf);
+            decResults.Add((name, (n / 1e6) / BestOf(iters, run)));
+            if (reused)
+                sharedBuf.AsSpan().Clear();
         }
 
         decResults.Sort((a, b) => b.Mbps.CompareTo(a.Mbps));

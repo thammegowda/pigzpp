@@ -53,6 +53,21 @@ PIGZPP_CAPI pigzpp_buffer pigzpp_gzip_compress(const uint8_t* data, size_t size,
 PIGZPP_CAPI pigzpp_buffer pigzpp_gzip_decompress(const uint8_t* data, size_t size,
                                      int threads);
 
+typedef enum {
+    PIGZPP_DECOMPRESS_OK = 0,
+    PIGZPP_DECOMPRESS_OUTPUT_TOO_SMALL = 1,
+    PIGZPP_DECOMPRESS_ERROR = 2,
+} pigzpp_decompress_status;
+
+// Inflate gzip (including concatenated members) or zlib into a caller-owned
+// destination without an intermediate output buffer. Returns a
+// pigzpp_decompress_status. Input and output must not overlap; `dst` may be
+// NULL only if `dst_cap` is zero. On success, sets `*written`. On failure,
+// `*written` is unchanged and `dst` may be modified.
+PIGZPP_CAPI int pigzpp_gzip_decompress_into(const uint8_t* data, size_t size,
+                                           uint8_t* dst, size_t dst_cap,
+                                           size_t* written);
+
 // Progress callback for pigzpp_compress_file. `total_size` is the input
 // file size at the start of compression; `read_size` and `write_size` are
 // cumulative bytes consumed and written; `elapsed_ms` is elapsed milliseconds.
