@@ -7,14 +7,12 @@ A .NET (netstandard2.0) binding for the pigzpp C ABI (`src/pigzpp/capi.h`).
 1. Build the native library:
 
    ```sh
-   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPIGZPP_BUILD_CAPI=ON
-   cmake --build build --config Release --target pigzppc
+   cmake -S . -B build-dotnet -DCMAKE_BUILD_TYPE=Release -DPIGZPP_BUILD_CAPI=ON -DPIGZPP_STATIC=OFF
+   cmake --build build-dotnet --config Release --target pigzppc
    ```
 
    This produces `pigzppc.dll` (Windows), `libpigzppc.so` (Linux) or
-   `libpigzppc.dylib` (macOS).
-
-   You can also use the docker/podman based builders in scripts/docker-build
+   `libpigzppc.dylib` (macOS) in `build-dotnet/`.
 
 2. Reference `src/dotnet/Pigzpp.csproj` from your project and make sure the
    native library is copied next to your application binary.
@@ -38,7 +36,7 @@ using Pigzpp;
 
 byte[] data = System.IO.File.ReadAllBytes("input.bin");
 
-// level: 1-9 (-1 = default); threads: <= 0 uses all cores.
+// level: 0-9 (-1 = default); threads: <= 0 uses all cores.
 byte[] gz = Pigzpp.Pigzpp.GzipCompress(data, level: 6, threads: 4);
 
 // Accepts gzip or zlib streams.
@@ -65,7 +63,8 @@ Pigzpp.Pigzpp.CompressFile("input.bin", "input.bin.gz",
 
 ### Report progress
 
-The callback is serialized and must not throw.
+The callback is serialized, throttled to ~200 ms between intermediate updates
+(plus a final call on completion), and must not throw.
 
 ```csharp
 Pigzpp.Pigzpp.CompressFile("big.bin", "big.bin.zip",
@@ -77,12 +76,9 @@ Pigzpp.Pigzpp.CompressFile("big.bin", "big.bin.zip",
 ### Handle errors
 
 ```csharp
-try
-{
+try {
     Pigzpp.Pigzpp.GzipDecompress(new byte[] { 1, 2, 3 });
-}
-catch (PigzppException ex)
-{
+} catch (PigzppException ex) {
     Console.WriteLine(ex.Message);
 }
 ```
@@ -107,9 +103,9 @@ gzip.CopyTo(output);
 make test-dotnet
 ```
 
-This builds `pigzppc` and runs `tests/dotnet` (skipped if the `dotnet` CLI is
-not installed). To run them directly against another build directory:
+This builds `pigzppc` and runs `tests/dotnet` using `build-dotnet/` for both
+native and managed outputs. To run against a custom native build directory:
 
 ```sh
-dotnet test tests/dotnet/Pigzpp.Tests.csproj -p:PigzppBuildDir=<build dir>
+dotnet test tests/dotnet/Pigzpp.Tests.csproj -c Release --artifacts-path build-dotnet/dotnet -p:PigzppBuildDir=<build dir>
 ```

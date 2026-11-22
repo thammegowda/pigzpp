@@ -41,7 +41,7 @@ typedef enum {
     PIGZPP_FORMAT_RAW = 3, // raw DEFLATE stream
 } pigzpp_format;
 
-// Compress `data` to gzip. `level` is 1-9 (or -1 for default); `threads` is
+// Compress `data` to gzip. `level` is 0-9 (or -1 for default); `threads` is
 // the number of compression threads (<= 0 means use all available cores);
 // `engine` selects the DEFLATE backend (see pigzpp_engine).
 PIGZPP_CAPI pigzpp_buffer pigzpp_gzip_compress(const uint8_t* data, size_t size,
@@ -55,11 +55,9 @@ PIGZPP_CAPI pigzpp_buffer pigzpp_gzip_decompress(const uint8_t* data, size_t siz
 
 // Progress callback for pigzpp_compress_file. `total_size` is the input
 // file size at the start of compression; `read_size` and `write_size` are
-// cumulative bytes read and written; `elapsed_ms` is elapsed milliseconds.
-// Calls are serialized: periodic calls (approximately every 200 ms) run on a
-// helper thread, and the final call runs on the calling thread, including on
-// compression failure, provided the file offsets can be read. The callback
-// must not throw an exception.
+// cumulative bytes consumed and written; `elapsed_ms` is elapsed milliseconds.
+// Calls are serialized, throttled to ~200 ms between intermediate updates, and
+// always invoked once on completion. The callback must not throw.
 typedef void (*pigzpp_compress_file_progress_callback)(uint64_t total_size,
                                                        uint64_t read_size,
                                                        uint64_t write_size,
@@ -72,7 +70,7 @@ typedef void (*pigzpp_compress_file_progress_callback)(uint64_t total_size,
 // `overwrite_existing` (non-zero) allows replacing an existing output file;
 // otherwise it is an error if it exists. The input and output must not refer
 // to the same file, including through hard links or symbolic links. `level` is
-// 1-9 (or -1 for default); `threads` of 0 (or less) uses the default.
+// 0-9 (or -1 for default); `threads` of 0 (or less) uses the default.
 // `progress_callback` may be NULL. Returns NULL on success, or a static error
 // message on failure (any partial output file is removed).
 PIGZPP_CAPI const char* pigzpp_compress_file(const char* uncompressed_filename,

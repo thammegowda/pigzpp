@@ -8,6 +8,9 @@ All notable changes to pigzpp are documented here. The format follows
 
 ### Added
 
+- .NET (`netstandard2.0`) bindings in `src/dotnet` and C ABI `pigzpp_compress_file`
+  with Gzip/Zlib/Zip/Raw output, progress callbacks, overwrite/same-file guards, and
+  Windows UTF-8 path support (#4, thanks to @gerdus).
 - CLI `-v` progress reporting on `stderr` (never `stdout`) for compression and
   decompression (`-d`, `-t`), with 500 ms terminal-width-aware inline redraws and a
   single summary line when `stderr` is redirected (#3, thanks to @gerdus).
@@ -16,6 +19,11 @@ All notable changes to pigzpp are documented here. The format follows
   formatted `stderr`, `FILE*`, or custom `Sink` output.
 - Windows MSVC build and test portability improvements across the `Makefile`, test
   helpers, and core benchmarks (#3, @gerdus).
+
+### Fixed
+
+- Parallel compression now validates levels up front and propagates worker/writer
+  exceptions cleanly to the caller instead of hanging or calling `std::terminate`.
 
 ## [1.2.0] - 2026-11-21
 

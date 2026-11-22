@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <exception>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
@@ -265,6 +266,8 @@ void Compressor::compress(int in_fd, int out_fd) {
 }
 
 void Compressor::compress(int in_fd, int out_fd, MemIO* mem) {
+    if (cfg_.level != -1 && (cfg_.level < 0 || cfg_.level > 9) && cfg_.level != 11)
+        throw std::invalid_argument("invalid compression level");
 #ifdef POSIX_FADV_SEQUENTIAL
     if (in_fd >= 0)
         posix_fadvise(in_fd, 0, 0, POSIX_FADV_SEQUENTIAL);
@@ -360,6 +363,8 @@ size_t Compressor::compress_buffer(const uint8_t* data, size_t size, uint8_t** o
 }
 
 std::vector<uint8_t> Compressor::direct_compress(const uint8_t* data, size_t size) {
+    if (cfg_.level != -1 && (cfg_.level < 0 || cfg_.level > 9))
+        throw std::invalid_argument("invalid compression level");
     ProgressReporter progress(cfg_);
     z_stream zs{};
     // Gzip = windowBits 15+16; zlib = 15; raw deflate = -15.
@@ -728,6 +733,31 @@ void Compressor::parallel_compress(int in_fd, int out_fd, MemIO* mem) {
     std::mutex write_mu;
     std::condition_variable write_cv;
 
+    std::atomic<bool> aborted{false};
+    std::mutex err_mu;
+    std::exception_ptr worker_err;
+    auto abort_pipeline = [&](std::exception_ptr ep) {
+        {
+            std::lock_guard lock(err_mu);
+            if (!worker_err) worker_err = ep;
+        }
+        aborted.store(true, std::memory_order_release);
+        {
+            std::lock_guard lock(compress_mu);
+            compress_queue.clear();
+            compress_done = true;
+        }
+        compress_cv.notify_all();
+        {
+            std::lock_guard lock(write_mu);
+            for (auto& slot : write_ring) slot.reset();
+        }
+        write_cv.notify_all();
+        in_pool.cancel();
+        out_pool.cancel();
+        dict_pool.cancel();
+    };
+
     // Write header (before launching threads)
     std::vector<unsigned char> hdr_bytes = build_header(cfg_);
     write_sink(mem, out_fd, hdr_bytes.data(), hdr_bytes.size());
@@ -735,6 +765,9 @@ void Compressor::parallel_compress(int in_fd, int out_fd, MemIO* mem) {
 
     // Compress worker thread function
     auto compress_worker = [&]() {
+        z_stream strm{};
+        bool strm_init = false;
+        try {
         int actual_level = cfg_.level == -1 ? 6 : cfg_.level;
 
 #ifdef PIGZPP_USE_ISAL
@@ -756,7 +789,6 @@ void Compressor::parallel_compress(int in_fd, int out_fd, MemIO* mem) {
         }
 #endif
 
-        z_stream strm{};
         std::shared_ptr<Buffer> temp;
 
 #ifdef PIGZPP_USE_ISAL
@@ -770,7 +802,9 @@ void Compressor::parallel_compress(int in_fd, int out_fd, MemIO* mem) {
             strm.opaque = Z_NULL;
             int ret = deflateInit2(&strm, actual_level, Z_DEFLATED, -15, 8,
                                    static_cast<int>(cfg_.strategy));
-            if (ret != Z_OK) return;
+            if (ret != Z_OK)
+                throw std::runtime_error("deflateInit2 failed");
+            strm_init = true;
         }
 #ifdef PIGZPP_USE_ISAL
         }
@@ -783,7 +817,8 @@ void Compressor::parallel_compress(int in_fd, int out_fd, MemIO* mem) {
                 compress_cv.wait(lock, [&] {
                     return !compress_queue.empty() || compress_done;
                 });
-                if (compress_queue.empty() && compress_done) break;
+                if (aborted.load(std::memory_order_acquire) ||
+                    (compress_queue.empty() && compress_done)) break;
                 job = compress_queue.front();
                 compress_queue.pop_front();
             }
@@ -945,6 +980,7 @@ void Compressor::parallel_compress(int in_fd, int out_fd, MemIO* mem) {
             // writing compressed data while we compute the check value.
             {
                 std::lock_guard lock(write_mu);
+                if (aborted.load(std::memory_order_acquire)) break;
                 write_ring[static_cast<size_t>(job->seq % write_slots)] = job;
                 write_cv.notify_one();
             }
@@ -963,13 +999,12 @@ void Compressor::parallel_compress(int in_fd, int out_fd, MemIO* mem) {
             job->check = chk;
             job->check_done.store(1, std::memory_order_release);
         }
-
-        if (cfg_.level <= 9) {
-#ifdef PIGZPP_USE_ISAL
-            if (!using_isal)
-#endif
-                deflateEnd(&strm);
+        } catch (...) {
+            abort_pipeline(std::current_exception());
         }
+
+        if (strm_init)
+            deflateEnd(&strm);
     };
 
     // Write thread function
@@ -978,14 +1013,16 @@ void Compressor::parallel_compress(int in_fd, int out_fd, MemIO* mem) {
     unsigned long check_val = check(cfg_.form, 0L, Z_NULL, 0);
 
     auto write_worker = [&]() {
+        try {
         for (;;) {
             std::shared_ptr<Job> job;
             {
                 std::unique_lock lock(write_mu);
                 auto& slot = write_ring[static_cast<size_t>(write_seq % write_slots)];
                 write_cv.wait(lock, [&] {
-                    return slot != nullptr;
+                    return slot != nullptr || aborted.load(std::memory_order_acquire);
                 });
+                if (aborted.load(std::memory_order_acquire)) break;
                 job = std::move(slot);
                 slot = nullptr;
             }
@@ -1003,8 +1040,10 @@ void Compressor::parallel_compress(int in_fd, int out_fd, MemIO* mem) {
 
             // Wait for check value (spin-yield: fast because CRC runs
             // in parallel with the write above)
-            while (job->check_done.load(std::memory_order_acquire) == 0)
+            while (job->check_done.load(std::memory_order_acquire) == 0) {
+                if (aborted.load(std::memory_order_acquire)) return;
                 std::this_thread::yield();
+            }
             unsigned long chk = job->check;
             check_val = check_combine(cfg_.form, check_val, chk, in_len,
                                       shift_, cfg_.block);
@@ -1013,6 +1052,9 @@ void Compressor::parallel_compress(int in_fd, int out_fd, MemIO* mem) {
             write_seq++;
 
             if (!more) break;
+        }
+        } catch (...) {
+            abort_pipeline(std::current_exception());
         }
     };
 
@@ -1026,6 +1068,7 @@ void Compressor::parallel_compress(int in_fd, int out_fd, MemIO* mem) {
         compress_threads.emplace_back(compress_worker);
 
     // Main thread: read input and create jobs
+    try {
     int64_t seq = 0;
     auto next_buf = in_pool.get();
     next_buf->len = read_fd(mem, in_fd, next_buf->data(), next_buf->size());
@@ -1037,7 +1080,7 @@ void Compressor::parallel_compress(int in_fd, int out_fd, MemIO* mem) {
     size_t rsync_left = 0;
 
     bool reading = true;
-    while (reading) {
+    while (reading && !aborted.load(std::memory_order_acquire)) {
         auto job = std::make_shared<Job>();
 
         auto curr = next_buf;
@@ -1128,11 +1171,15 @@ void Compressor::parallel_compress(int in_fd, int out_fd, MemIO* mem) {
         // Enqueue for compression
         {
             std::lock_guard lock(compress_mu);
+            if (aborted.load(std::memory_order_acquire)) break;
             compress_queue.push_back(job);
             compress_cv.notify_one();
         }
 
         if (!has_more) reading = false;
+    }
+    } catch (...) {
+        abort_pipeline(std::current_exception());
     }
 
     // Signal compress threads to finish
@@ -1147,6 +1194,9 @@ void Compressor::parallel_compress(int in_fd, int out_fd, MemIO* mem) {
 
     // Wait for write thread
     write_thread.join();
+
+    if (worker_err)
+        std::rethrow_exception(worker_err);
 
     // Write trailer
     size_t tail = 0;

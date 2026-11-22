@@ -1,10 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net8.0</TargetFramework>
+    <RollForward>LatestMajor</RollForward>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
     <!-- Directory holding the native pigzppc library; override with -p:PigzppBuildDir=... -->
-    <PigzppBuildDir Condition="'$(PigzppBuildDir)' == ''">$(MSBuildThisFileDirectory)../../build</PigzppBuildDir>
+    <PigzppBuildDir Condition="'$(PigzppBuildDir)' == ''">$(MSBuildThisFileDirectory)../../build-dotnet</PigzppBuildDir>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.*" />
@@ -15,7 +16,7 @@
   <!-- Copy the native library next to the test assembly. -->
   <ItemGroup>
     <None Include="$(PigzppBuildDir)/**/pigzppc.dll;$(PigzppBuildDir)/**/libpigzppc.so;$(PigzppBuildDir)/**/libpigzppc.dylib"
-          Exclude="$(PigzppBuildDir)/**/Debug/**;$(PigzppBuildDir)/_deps/**"
+          Exclude="$(PigzppBuildDir)/**/Debug/**;$(PigzppBuildDir)/_deps/**;$(PigzppBuildDir)/dotnet/**"
           CopyToOutputDirectory="PreserveNewest" Link="%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

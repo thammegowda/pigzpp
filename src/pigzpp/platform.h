@@ -6,7 +6,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <ctime>
 #include <limits>
 #include <string>
@@ -119,39 +118,6 @@ inline int fstat(int fd, FileStat* result) {
     return ::_fstat64(fd, result);
 #else
     return ::fstat(fd, result);
-#endif
-}
-
-inline int same_file(int lhs_fd, int rhs_fd) {
-#if defined(_WIN32)
-    HANDLE lhs = reinterpret_cast<HANDLE>(::_get_osfhandle(lhs_fd));
-    HANDLE rhs = reinterpret_cast<HANDLE>(::_get_osfhandle(rhs_fd));
-    if (lhs == INVALID_HANDLE_VALUE || rhs == INVALID_HANDLE_VALUE)
-        return -1;
-#if defined(_WIN32_WINNT) && _WIN32_WINNT >= 0x0602
-    FILE_ID_INFO lhs_id{}, rhs_id{};
-    if (::GetFileInformationByHandleEx(lhs, FileIdInfo, &lhs_id, sizeof(lhs_id)) &&
-        ::GetFileInformationByHandleEx(rhs, FileIdInfo, &rhs_id, sizeof(rhs_id))) {
-        return lhs_id.VolumeSerialNumber == rhs_id.VolumeSerialNumber &&
-                       std::memcmp(&lhs_id.FileId, &rhs_id.FileId, sizeof(lhs_id.FileId)) == 0
-                   ? 1
-                   : 0;
-    }
-#endif
-    BY_HANDLE_FILE_INFORMATION lhs_info{}, rhs_info{};
-    if (!::GetFileInformationByHandle(lhs, &lhs_info) ||
-        !::GetFileInformationByHandle(rhs, &rhs_info))
-        return -1;
-    return lhs_info.dwVolumeSerialNumber == rhs_info.dwVolumeSerialNumber &&
-                   lhs_info.nFileIndexHigh == rhs_info.nFileIndexHigh &&
-                   lhs_info.nFileIndexLow == rhs_info.nFileIndexLow
-               ? 1
-               : 0;
-#else
-    FileStat lhs{}, rhs{};
-    if (::fstat(lhs_fd, &lhs) != 0 || ::fstat(rhs_fd, &rhs) != 0)
-        return -1;
-    return lhs.st_dev == rhs.st_dev && lhs.st_ino == rhs.st_ino ? 1 : 0;
 #endif
 }
 

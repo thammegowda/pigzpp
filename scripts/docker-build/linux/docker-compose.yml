@@ -1,8 +1,0 @@
-services:
-  build-capi:
-    build:
-      context: .
-    image: pigzpp-capi-linux-builder
-    volumes:
-      - ../../..:/src:ro
-      - ./artifacts:/artifacts

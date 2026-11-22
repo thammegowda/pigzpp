@@ -4,7 +4,7 @@
 #   make build          Build release mode (optimized, static CLI)
 #   make debug          Build debug mode (sanitizers, no optimizations)
 #   make test           Run C++ and Python tests
-#   make test-dotnet    Run .NET binding tests (skipped if dotnet is not installed)
+#   make test-dotnet    Run .NET binding tests
 #   make bench-setup    Create benchmark data files, install Python packages
 #   make bench-bin      Benchmark CLI: gzip vs pigz vs pigzpp (requires hyperfine)
 #   make bench-py       Benchmark Python: gzip vs zlib-ng vs isal vs pigzpp
@@ -25,6 +25,7 @@ THREADS ?= 1 4 8 16
 
 BUILD_DIR       := build
 DEBUG_DIR       := build-debug
+DOTNET_DIR      := build-dotnet
 BENCH_DATA_DIR  := build/bench_data
 PIGZPP_BIN      := $(BUILD_DIR)/pigzpp
 
@@ -66,9 +67,11 @@ debug:
 	@echo Debug build complete in $(DEBUG_DIR)
 
 clean:
-	rm -rf $(BUILD_DIR) $(DEBUG_DIR)
+	rm -rf $(BUILD_DIR) $(DEBUG_DIR) $(DOTNET_DIR)
 
 # ─── Tests ────────────────────────────────────────────────────────────────────
+
+.PHONY: test test-cpp test-py test-dotnet dotnet-test
 
 test: test-cpp test-py
 
@@ -78,22 +81,18 @@ test-cpp: build
 test-py: build
 	PYTHONPATH=$(CURDIR)/$(BUILD_DIR) python -m pytest tests/test_python.py tests/test_zip.py tests/test_png.py -v
 
-# .NET binding tests (src/dotnet, tests/dotnet); needs the dotnet CLI and the
-# shared C-ABI library (pigzppc), built here with PIGZPP_BUILD_CAPI=ON.
-ifeq ($(OS),Windows_NT)
-HAVE_DOTNET := $(shell where dotnet 2>nul)
-else
-HAVE_DOTNET := $(shell command -v dotnet 2>/dev/null)
-endif
+dotnet-test: test-dotnet
 
 test-dotnet:
-ifeq ($(strip $(HAVE_DOTNET)),)
-	@echo "dotnet CLI not found; skipping .NET tests"
+ifeq ($(OS),Windows_NT)
+	@where dotnet >nul 2>nul || (echo dotnet CLI not found; install .NET 8+ SDK & exit /b 1)
 else
-	cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=Release -DPIGZPP_BUILD_CAPI=ON
-	cmake --build $(BUILD_DIR) --config Release --target pigzppc --parallel $(NPROC)
-	dotnet test tests/dotnet/Pigzpp.Tests.csproj -p:PigzppBuildDir=$(CURDIR)/$(BUILD_DIR)
+	@command -v dotnet >/dev/null 2>&1 || { echo "dotnet CLI not found; install .NET 8+ SDK (on WSL, run via Windows dotnet.exe / PowerShell)"; exit 1; }
 endif
+	cmake -S . -B $(DOTNET_DIR) -DCMAKE_BUILD_TYPE=Release -DPIGZPP_BUILD_CAPI=ON \
+		-DPIGZPP_BUILD_CLI=OFF -DPIGZPP_BUILD_PYTHON=OFF -DPIGZPP_BUILD_TESTS=OFF -DPIGZPP_STATIC=OFF
+	cmake --build $(DOTNET_DIR) --config Release --target pigzppc --parallel $(NPROC)
+	dotnet test tests/dotnet/Pigzpp.Tests.csproj -c Release --artifacts-path $(CURDIR)/$(DOTNET_DIR)/dotnet
 # ─── Benchmarks ───────────────────────────────────────────────────────────────
 
 .PHONY: bench-setup bench-bin bench-py bench-png bench-report-setup bench-report bench

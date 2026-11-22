@@ -81,8 +81,12 @@ if(PIGZPP_BUILD_CAPI AND NOT EMSCRIPTEN)
     set_target_properties(pigzppc PROPERTIES
         OUTPUT_NAME pigzppc
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
         POSITION_INDEPENDENT_CODE ON
     )
+    if(WIN32)
+        set_target_properties(pigzppc PROPERTIES PREFIX "")
+    endif()
     target_compile_definitions(pigzppc PRIVATE PIGZPP_CAPI_EXPORTS)
     target_include_directories(pigzppc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(pigzppc PRIVATE pigzpp_lib)
