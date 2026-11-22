@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <ctime>
 #include <limits>
+#include <string>
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -32,8 +33,26 @@ namespace pigzpp::platform {
 
 #if defined(_WIN32)
 using FileStat = struct ::_stat64;
+using NativePath = std::wstring;
+
+inline bool native_path(const char* utf8, NativePath& path) {
+    int size = ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, nullptr, 0);
+    if (size == 0) return false;
+    path.resize(static_cast<size_t>(size));
+    if (::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1,
+                              path.data(), size) == 0)
+        return false;
+    path.pop_back();
+    return true;
+}
 #else
 using FileStat = struct stat;
+using NativePath = std::string;
+
+inline bool native_path(const char* utf8, NativePath& path) {
+    path = utf8;
+    return true;
+}
 #endif
 
 inline int open(const char* path, int flags, int mode = 0) {
@@ -43,6 +62,12 @@ inline int open(const char* path, int flags, int mode = 0) {
     return ::open(path, flags, mode);
 #endif
 }
+
+#if defined(_WIN32)
+inline int open(const wchar_t* path, int flags, int mode = 0) {
+    return ::_wopen(path, flags | _O_BINARY, mode);
+}
+#endif
 
 inline std::ptrdiff_t read(int fd, void* buffer, size_t size) {
 #if defined(_WIN32)
@@ -180,6 +205,12 @@ inline int unlink(const char* path) {
     return ::unlink(path);
 #endif
 }
+
+#if defined(_WIN32)
+inline int unlink(const wchar_t* path) {
+    return ::_wunlink(path);
+}
+#endif
 
 inline int sync(int fd) {
 #if defined(_WIN32)

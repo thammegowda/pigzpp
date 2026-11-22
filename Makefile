@@ -4,9 +4,11 @@
 #   make build          Build release mode (optimized, static CLI)
 #   make debug          Build debug mode (sanitizers, no optimizations)
 #   make test           Run C++ and Python tests
+#   make test-dotnet    Run .NET binding tests
 #   make bench-setup    Create benchmark data files, install Python packages
 #   make bench-bin      Benchmark CLI: gzip vs pigz vs pigzpp (requires hyperfine)
 #   make bench-py       Benchmark Python: gzip vs zlib-ng vs isal vs pigzpp
+#   make bench-dotnet   Benchmark .NET: GZipStream vs SharpZipLib vs LibDeflate.NET vs pigzpp
 #   make bench-png      Benchmark PNG encoding vs Pillow baseline
 #   make bench-report   Re-run report figures with raw JSON + median-of-7
 #   make bench          Run all benchmarks
@@ -24,6 +26,7 @@ THREADS ?= 1 4 8 16
 
 BUILD_DIR       := build
 DEBUG_DIR       := build-debug
+DOTNET_DIR      := build-dotnet
 BENCH_DATA_DIR  := build/bench_data
 PIGZPP_BIN      := $(BUILD_DIR)/pigzpp
 
@@ -65,9 +68,11 @@ debug:
 	@echo Debug build complete in $(DEBUG_DIR)
 
 clean:
-	rm -rf $(BUILD_DIR) $(DEBUG_DIR)
+	rm -rf $(BUILD_DIR) $(DEBUG_DIR) $(DOTNET_DIR)
 
 # ─── Tests ────────────────────────────────────────────────────────────────────
+
+.PHONY: test test-cpp test-py test-dotnet dotnet-test
 
 test: test-cpp test-py
 
@@ -77,9 +82,21 @@ test-cpp: build
 test-py: build
 	PYTHONPATH=$(CURDIR)/$(BUILD_DIR) python -m pytest tests/test_python.py tests/test_zip.py tests/test_png.py -v
 
+dotnet-test: test-dotnet
+
+test-dotnet:
+ifeq ($(OS),Windows_NT)
+	@where dotnet >nul 2>nul || (echo dotnet CLI not found; install .NET 8+ SDK & exit /b 1)
+else
+	@command -v dotnet >/dev/null 2>&1 || { echo "dotnet CLI not found; install .NET 8+ SDK (on WSL, run via Windows dotnet.exe / PowerShell)"; exit 1; }
+endif
+	cmake -S . -B $(DOTNET_DIR) -DCMAKE_BUILD_TYPE=Release -DPIGZPP_BUILD_CAPI=ON \
+		-DPIGZPP_BUILD_CLI=OFF -DPIGZPP_BUILD_PYTHON=OFF -DPIGZPP_BUILD_TESTS=OFF -DPIGZPP_STATIC=OFF
+	cmake --build $(DOTNET_DIR) --config Release --target pigzppc --parallel $(NPROC)
+	dotnet test tests/dotnet/Pigzpp.Tests.csproj -c Release --artifacts-path $(CURDIR)/$(DOTNET_DIR)/dotnet
 # ─── Benchmarks ───────────────────────────────────────────────────────────────
 
-.PHONY: bench-setup bench-bin bench-py bench-png bench-report-setup bench-report bench
+.PHONY: bench-setup bench-bin bench-py bench-dotnet bench-png bench-report-setup bench-report bench
 
 # Generate test data files and install Python benchmark dependencies
 bench-setup:
@@ -98,6 +115,22 @@ bench-bin: bench-setup
 # Python benchmark: gzip vs zlib-ng vs isal vs pigzpp
 bench-py: bench-setup
 	PYTHONPATH=$(CURDIR)/$(BUILD_DIR) python benchmarks/python/bench_python.py --sizes $(SIZES) --iterations $(ITERS)
+
+# .NET benchmark: System.IO.Compression vs SharpZipLib vs LibDeflate.NET vs pigzpp
+bench-dotnet:
+ifeq ($(OS),Windows_NT)
+	@where dotnet >nul 2>nul || (echo dotnet CLI not found; install .NET 8+ SDK & exit /b 1)
+	if not exist "$(BENCH_DATA_DIR)/128MB.txt" python benchmarks/core/gen_data.py --sizes 128 --data-dir $(BENCH_DATA_DIR)
+else
+	@command -v dotnet >/dev/null 2>&1 || { echo "dotnet CLI not found; install .NET 8+ SDK"; exit 1; }
+	@test -f "$(BENCH_DATA_DIR)/128MB.txt" || python3 benchmarks/core/gen_data.py --sizes 128 --data-dir $(BENCH_DATA_DIR)
+endif
+	cmake -S . -B $(DOTNET_DIR) -DCMAKE_BUILD_TYPE=Release -DPIGZPP_BUILD_CAPI=ON \
+		-DPIGZPP_BUILD_CLI=OFF -DPIGZPP_BUILD_PYTHON=OFF -DPIGZPP_BUILD_TESTS=OFF -DPIGZPP_STATIC=OFF
+	cmake --build $(DOTNET_DIR) --config Release --target pigzppc --parallel $(NPROC)
+	dotnet run --project benchmarks/dotnet/Pigzpp.Bench.csproj -c Release \
+		--artifacts-path $(CURDIR)/$(DOTNET_DIR)/dotnet -- \
+		--input $(BENCH_DATA_DIR)/128MB.txt --iters $(ITERS) --level 6 --threads 8
 
 # PNG benchmark: pigzpp.png and OpenCV against Pillow baseline
 bench-png: build

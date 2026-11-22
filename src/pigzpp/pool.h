@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <condition_variable>
+#include <stdexcept>
 #include <vector>
 
 namespace pigzpp {
@@ -65,8 +66,10 @@ public:
 
         // If at limit and none available, wait.
         if (limit_ == 0 && free_.empty()) {
-            cv_.wait(lock, [this] { return !free_.empty(); });
+            cv_.wait(lock, [this] { return !free_.empty() || cancelled_; });
         }
+        if (cancelled_)
+            throw std::runtime_error("buffer pool cancelled");
 
         Buffer* raw = nullptr;
         if (!free_.empty()) {
@@ -106,6 +109,13 @@ public:
         bp.reset();
     }
 
+    // Wake any blocked get() callers during pipeline teardown on error.
+    void cancel() {
+        std::lock_guard lock(mu_);
+        cancelled_ = true;
+        cv_.notify_all();
+    }
+
     size_t buf_size() const { return buf_size_; }
 
 private:
@@ -115,6 +125,7 @@ private:
     size_t buf_size_ = 0;
     int limit_ = -1;
     int made_ = 0;
+    bool cancelled_ = false;
 };
 
 } // namespace pigzpp

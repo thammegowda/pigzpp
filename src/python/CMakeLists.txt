@@ -8,7 +8,10 @@ endif()
 add_subdirectory("${PIGZPP_NANOBIND_DIR}" "${CMAKE_BINARY_DIR}/third_party/nanobind")
 
 nanobind_add_module(pigzpp_py STABLE_ABI NB_STATIC pigzpp_pybind.cpp)
-target_sources(pigzpp_py PRIVATE "${PROJECT_SOURCE_DIR}/src/pigzpp/main.cpp")
+target_sources(pigzpp_py PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/pigzpp/main.cpp"
+    "${PROJECT_SOURCE_DIR}/src/pigzpp/capi.cpp"
+)
 target_link_libraries(pigzpp_py PRIVATE pigzpp_lib)
 target_compile_definitions(pigzpp_py PRIVATE
     PIGZPP_CLI_NO_MAIN

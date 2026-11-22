@@ -77,7 +77,7 @@ std::vector<unsigned char> build_header(const Config& cfg) {
         // Local file header
         put_le(hdr, 0x04034b50, 4); // signature
         put_le(hdr, 45, 2);         // version needed
-        put_le(hdr, 8, 2);          // flags: data descriptor follows
+        put_le(hdr, 0x0808, 2);     // flags: data descriptor follows + UTF-8
         put_le(hdr, 8, 2);          // deflate
         put_le(hdr, time2dos(cfg.mtime), 4);
         put_le(hdr, 0, 4);          // crc placeholder
@@ -183,7 +183,7 @@ size_t put_trailer(int fd, const Config& cfg,
         put_le(tlr, 45, 1); // version made by
         put_le(tlr, 255, 1);
         put_le(tlr, 45, 2);  // version needed
-        put_le(tlr, 8, 2);   // flags
+        put_le(tlr, 0x0808, 2); // flags: data descriptor follows + UTF-8
         put_le(tlr, 8, 2);   // deflate
         put_le(tlr, time2dos(cfg.mtime), 4);
         put_le(tlr, check, 4);

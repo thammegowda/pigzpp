@@ -14,6 +14,11 @@
 #include <vector>
 #include <fcntl.h>
 
+#if !defined(_WIN32)
+#include <csignal>
+#include <unistd.h>
+#endif
+
 namespace fs = std::filesystem;
 using namespace pigzpp;
 
@@ -324,4 +329,34 @@ TEST_F(CompressDecompressTest, ThreadSafety) {
     }
 
     for (auto& t : threads) t.join();
+}
+
+TEST_F(CompressDecompressTest, ParallelErrorsPropagateWithoutHanging) {
+    std::string data(512 * 1024, 'e');
+    uint8_t* out = nullptr;
+    Config bad_lvl;
+    bad_lvl.procs = 4;
+    bad_lvl.engine = Engine::Zlib;
+    bad_lvl.level = -2;
+    EXPECT_THROW(Compressor(bad_lvl).compress_buffer(
+        reinterpret_cast<const uint8_t*>(data.data()), data.size(), &out), std::invalid_argument);
+
+#if !defined(_WIN32)
+    auto orig = path("pipe_err.txt");
+    write_file(orig, data);
+    int in_fd = platform::open(orig.c_str(), O_RDONLY), p[2] = {-1, -1};
+    ASSERT_GE(in_fd, 0);
+    ASSERT_EQ(::pipe(p), 0);
+    ::close(p[0]); // closed read end -> EPIPE inside write_worker
+    auto prev = std::signal(SIGPIPE, SIG_IGN);
+    Config pcfg;
+    pcfg.procs = 4;
+    pcfg.level = 0;
+    pcfg.block = 32768;
+    pcfg.form = Format::Raw; // 0-byte header so first write happens in write_worker
+    EXPECT_THROW(Compressor(pcfg).compress(in_fd, p[1]), std::runtime_error);
+    std::signal(SIGPIPE, prev);
+    ::close(p[1]);
+    platform::close(in_fd);
+#endif
 }

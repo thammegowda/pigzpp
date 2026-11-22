@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RollForward>LatestMajor</RollForward>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <NoWarn>$(NoWarn);NETSDK1206</NoWarn>
+    <!-- Directory holding the native pigzppc library; override with -p:PigzppBuildDir=... -->
+    <PigzppBuildDir Condition="'$(PigzppBuildDir)' == ''">$(MSBuildThisFileDirectory)../../build-dotnet</PigzppBuildDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="LibDeflate.NET" Version="1.19.0" />
+    <PackageReference Include="SharpZipLib" Version="1.4.2" />
+    <ProjectReference Include="../../src/dotnet/Pigzpp.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="$(PigzppBuildDir)/**/pigzppc.dll;$(PigzppBuildDir)/**/libpigzppc.so;$(PigzppBuildDir)/**/libpigzppc.dylib"
+          Exclude="$(PigzppBuildDir)/**/Debug/**;$(PigzppBuildDir)/_deps/**;$(PigzppBuildDir)/dotnet/**"
+          CopyToOutputDirectory="PreserveNewest" Link="%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

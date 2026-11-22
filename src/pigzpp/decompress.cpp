@@ -14,7 +14,9 @@
 #include <climits>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -199,74 +201,148 @@ void Decompressor::list(int in_fd) {
     infchk(in_fd, -1);
 }
 
-std::vector<uint8_t> Decompressor::decompress_buffer(const uint8_t* data, size_t size) {
-    // Fast path: gzip/zlib streams inflate directly in memory (auto-detect via
-    // windowBits 15+32), skipping the temp-fd round-trip. Zip framing and other
-    // cases fall through to the fd pipeline below.
-    const bool looks_gzip = size >= 2 && data[0] == 0x1f && data[1] == 0x8b;
-    const bool looks_zlib = size >= 2 && (data[0] & 0x0f) == 0x08 &&
-                            ((static_cast<unsigned>(data[0]) << 8 | data[1]) % 31) == 0;
-    if (looks_gzip || looks_zlib)
-        return direct_decompress(data, size);
-
-    // Fallback (zip framing, etc.): run the fd pipeline over tmpfs temp fds.
-    return run_via_temp_fds(data, size,
-                            [this](int in_fd, int out_fd) { decompress(in_fd, out_fd); });
+static bool is_gzip_magic(const uint8_t* data, size_t size) {
+    return size >= 2 && data[0] == 0x1f && data[1] == 0x8b;
 }
 
-std::vector<uint8_t> Decompressor::direct_decompress(const uint8_t* data, size_t size) {
+static bool is_zlib_magic(const uint8_t* data, size_t size) {
+    return size >= 2 && (data[0] & 0x0f) == 0x08 &&
+           ((static_cast<unsigned>(data[0]) << 8 | data[1]) % 31) == 0;
+}
+
+// Share the portable decoder between fixed and growable destinations. The
+// grow function is used only when there is no more output room.
+static std::optional<size_t> inflate_buffer(
+    const uint8_t* data, size_t size, uint8_t* dst, size_t cap,
+    const std::function<uint8_t*(size_t)>& grow = {}) {
     z_stream zs{};
-    const bool gzip = size >= 2 && data[0] == 0x1f && data[1] == 0x8b;
-    // windowBits 15+32: auto-detect gzip or zlib wrapper.
     if (inflateInit2(&zs, 15 + 32) != Z_OK)
         throw std::runtime_error("decompress_buffer: inflateInit2 failed");
+    const std::unique_ptr<z_stream, decltype(&inflateEnd)> stream(&zs, inflateEnd);
+    const bool gzip = is_gzip_magic(data, size);
+    const uint8_t* in_ptr = data;
+    size_t in_left = size, out_pos = 0;
+    uint8_t extra;
 
-    std::vector<uint8_t> out(size ? size * 4 + 1024 : 1024);
-    const auto* in_ptr = reinterpret_cast<const Bytef*>(data);
-    size_t in_left = size;
-    size_t out_pos = 0;
-
-    int ret;
     for (;;) {
-        if (zs.avail_in == 0 && in_left > 0) {
-            const uInt c = in_left > UINT_MAX ? UINT_MAX : static_cast<uInt>(in_left);
+        if (zs.avail_in == 0 && in_left != 0) {
+            const auto chunk = static_cast<uInt>(std::min<size_t>(in_left, UINT_MAX));
             zs.next_in = const_cast<Bytef*>(in_ptr);
-            zs.avail_in = c;
-            in_ptr += c;
-            in_left -= c;
+            zs.avail_in = chunk;
+            in_ptr += chunk;
+            in_left -= chunk;
         }
-        if (out_pos == out.size())
-            out.resize(out.size() + (out.size() >> 1) + 4096);
-        zs.next_out = out.data() + out_pos;
-        zs.avail_out = static_cast<uInt>(
-            std::min<size_t>(out.size() - out_pos, UINT_MAX));
+        if (out_pos == cap && grow) {
+            const size_t growth = (cap >> 1) + 4096;
+            if (growth > SIZE_MAX - cap)
+                throw std::length_error("decompress_buffer: output too large");
+            cap += growth;
+            dst = grow(cap);
+        }
+        // A byte of scratch lets inflate finish the trailer (or an empty
+        // member) even when the caller's destination is exactly full.
+        const size_t room = cap - out_pos;
+        zs.next_out = room ? dst + out_pos : &extra;
+        const auto available = static_cast<uInt>(std::min<size_t>(room ? room : 1, UINT_MAX));
+        zs.avail_out = available;
 
-        ret = inflate(&zs, Z_NO_FLUSH);
-        out_pos = static_cast<size_t>(zs.next_out - out.data());
+        const int ret = inflate(&zs, Z_NO_FLUSH);
+        if (ret != Z_OK && ret != Z_STREAM_END)
+            throw std::runtime_error("decompress_buffer: inflate failed");
+        if (room == 0 && zs.avail_out == 0)
+            return std::nullopt;
+        out_pos += available - zs.avail_out;
         if (ret == Z_STREAM_END) {
             const size_t remaining = static_cast<size_t>(zs.avail_in) + in_left;
-            Bytef* next_in = zs.avail_in ? zs.next_in : const_cast<Bytef*>(in_ptr);
-            if (!gzip || remaining < 2 || next_in[0] != 0x1f || next_in[1] != 0x8b)
-                break;
-
+            const uint8_t* next_in = zs.avail_in ? zs.next_in : in_ptr;
+            if (!gzip || !is_gzip_magic(next_in, remaining))
+                return out_pos;
             const uInt avail_in = zs.avail_in;
-            if (inflateReset2(&zs, 15 + 32) != Z_OK) {
-                inflateEnd(&zs);
+            if (inflateReset2(&zs, 15 + 32) != Z_OK)
                 throw std::runtime_error("decompress_buffer: inflateReset2 failed");
-            }
-            zs.next_in = next_in;
+            zs.next_in = const_cast<Bytef*>(next_in);
             zs.avail_in = avail_in;
-            continue;
-        }
-        if (ret != Z_OK) { // Z_BUF_ERROR here means truncated input.
-            inflateEnd(&zs);
-            throw std::runtime_error("decompress_buffer: inflate failed");
         }
     }
-    out.resize(out_pos);
-    inflateEnd(&zs);
-    ProgressReporter{cfg_}(size, out_pos, true);
-    return out;
+}
+
+std::optional<size_t> decompress_buffer_into(const uint8_t* data, size_t size,
+                                             uint8_t* dst, size_t dst_cap) {
+    if (!is_gzip_magic(data, size) && !is_zlib_magic(data, size))
+        throw std::runtime_error("unrecognized compressed format");
+
+#ifdef PIGZPP_USE_ISAL
+    if (is_gzip_magic(data, size) && size <= UINT32_MAX && dst_cap <= UINT32_MAX) {
+        inflate_state state;
+        isal_inflate_init(&state);
+        state.count = 0;
+        state.crc_flag = ISAL_GZIP;
+        state.next_in = const_cast<uint8_t*>(data);
+        state.avail_in = static_cast<uint32_t>(size);
+        uint8_t scratch;
+        state.next_out = dst ? dst : &scratch;
+        state.avail_out = static_cast<uint32_t>(dst_cap);
+
+        size_t written = 0;
+        do {
+            // ISA-L doesn't check gzip's reserved flag bits.
+            if (state.avail_in >= 4 && (state.next_in[3] & 0xe0))
+                throw std::runtime_error("decompress_buffer: invalid gzip flags");
+            const int ret = isal_inflate_stateless(&state);
+            if (ret == ISAL_OUT_OVERFLOW)
+                return std::nullopt;
+            if (ret != ISAL_DECOMP_OK)
+                throw std::runtime_error("decompress_buffer: inflate failed");
+            written += state.total_out;
+        } while (is_gzip_magic(state.next_in, state.avail_in));
+        return written;
+    }
+#endif
+    return inflate_buffer(data, size, dst, dst_cap);
+}
+
+static size_t initial_inflate_capacity(size_t size) {
+    return size <= (SIZE_MAX - 1024) / 4 ? size * 4 + 1024 : 1024;
+}
+
+size_t Decompressor::decompress_buffer(const uint8_t* data, size_t size, uint8_t** out) {
+    if (is_gzip_magic(data, size) || is_zlib_magic(data, size)) {
+        std::unique_ptr<uint8_t, decltype(&std::free)> buf(nullptr, std::free);
+        auto grow = [&](size_t capacity) {
+            auto* old = buf.release();
+            auto* resized = static_cast<uint8_t*>(std::realloc(old, capacity));
+            buf.reset(resized ? resized : old);
+            if (!resized) throw std::bad_alloc();
+            return resized;
+        };
+        const size_t capacity = initial_inflate_capacity(size);
+        const size_t written = inflate_buffer(data, size, grow(capacity), capacity, grow).value();
+        ProgressReporter{cfg_}(size, written, true);
+        *out = buf.release();
+        return written;
+    }
+
+    auto v = decompress_buffer(data, size);
+    auto* p = static_cast<uint8_t*>(std::malloc(v.empty() ? 1 : v.size()));
+    if (!p) throw std::bad_alloc();
+    if (!v.empty()) std::memcpy(p, v.data(), v.size());
+    *out = p;
+    return v.size();
+}
+
+std::vector<uint8_t> Decompressor::decompress_buffer(const uint8_t* data, size_t size) {
+    if (is_gzip_magic(data, size) || is_zlib_magic(data, size)) {
+        std::vector<uint8_t> out(initial_inflate_capacity(size));
+        const size_t written = inflate_buffer(data, size, out.data(), out.size(), [&](size_t n) {
+            out.resize(n);
+            return out.data();
+        }).value();
+        out.resize(written);
+        ProgressReporter{cfg_}(size, written, true);
+        return out;
+    }
+    return run_via_temp_fds(data, size,
+                            [this](int in_fd, int out_fd) { decompress(in_fd, out_fd); });
 }
 
 void Decompressor::infchk(int in_fd, int out_fd) {

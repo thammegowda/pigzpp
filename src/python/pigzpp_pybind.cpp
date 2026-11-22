@@ -7,6 +7,7 @@
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 
+#include "capi.h"
 #include "compress.h"
 #include "cli.h"
 #include "config.h"
@@ -175,15 +176,11 @@ private:
 // wins ~20x on realistic data by using all cores. Raw deflate and small inputs
 // stay on the single-threaded zero-copy path.
 //
-// Helper: read uncompressed size from gzip trailer (last 4 bytes).
-// Returns 0 if input is not gzip or too short.
-static uint32_t gzip_trailer_size(const unsigned char *data, size_t len) {
-    if (len >= 18 && data[0] == 0x1f && data[1] == 0x8b) {
-        uint32_t isize;
-        memcpy(&isize, data + len - 4, 4);
-        return isize;
-    }
-    return 0;
+// Read the little-endian ISIZE from a gzip trailer.
+static uint32_t gzip_trailer_size(const uint8_t* data, size_t len) {
+    const uint8_t* p = data + len - 4;
+    return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+           (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
 }
 
 class PyBuffer {
@@ -379,142 +376,52 @@ pigzpp_decompress(nb::object data, Py_ssize_t bufsize)
     PyBuffer buffer(data);
     buffer.require_c_contiguous("data");
     const Py_buffer& buf = buffer.view();
-    auto* ibuf = static_cast<unsigned char *>(buf.buf);
-    size_t ibuflen = static_cast<size_t>(buf.len);
+    const auto* input = static_cast<const uint8_t*>(buf.buf);
+    const size_t size = static_cast<size_t>(buf.len);
+    const bool gzip = size >= 2 && input[0] == 0x1f && input[1] == 0x8b;
+    if (!gzip && (size < 2 || (input[0] & 0x0f) != Z_DEFLATED))
+        throw std::runtime_error("pigzpp: expected gzip or zlib input");
 
-    const uint32_t trailer_size = gzip_trailer_size(ibuf, ibuflen);
-
-    // Fast path for ordinary single-member gzip streams: ISIZE gives the exact
-    // output length, so inflate directly into a newly allocated Python bytes
-    // object. The previous stable-ABI rewrite inflated into std::vector and
-    // then copied the whole output into bytes, which is costly for large data.
-    // A caller-provided exact bufsize enables the same path for zlib streams.
-    const Py_ssize_t direct_size = bufsize > 0
-                                       ? bufsize
-                                       : static_cast<Py_ssize_t>(trailer_size);
-    if (direct_size > 0) {
+    // ISIZE is a hint, not a length guarantee (e.g. concatenated gzip).
+    if (bufsize <= 0 && gzip && size >= 18) {
+        const auto hint = gzip_trailer_size(input, size);
+        const auto limit = size <= (SIZE_MAX - 65536) / 1032 ? size * 1032 + 65536 : SIZE_MAX;
+        if (hint <= limit && hint <= static_cast<size_t>(PY_SSIZE_T_MAX))
+            bufsize = static_cast<Py_ssize_t>(hint);
+    }
+    if (bufsize > 0) {
         nb::bytes direct = nb::steal<nb::bytes>(
-            PyBytes_FromStringAndSize(nullptr, direct_size));
+            PyBytes_FromStringAndSize(nullptr, bufsize));
         if (!direct.is_valid())
             throw nb::python_error();
 
-        z_stream fast{};
-        if (inflateInit2(&fast, 15 + 32) != Z_OK)
-            throw std::runtime_error("inflateInit2 failed");
-
-        auto* output = reinterpret_cast<unsigned char*>(
-            PyBytes_AsString(direct.ptr()));
-        size_t input_offset = 0;
-        int fast_ret = Z_OK;
+        auto* output = reinterpret_cast<uint8_t*>(PyBytes_AsString(direct.ptr()));
+        size_t written = 0;
+        int status;
         {
             nb::gil_scoped_release release;
-            for (;;) {
-                if (fast.avail_in == 0 && input_offset < ibuflen) {
-                    size_t chunk = std::min<size_t>(ibuflen - input_offset,
-                                                    UINT_MAX);
-                    fast.next_in = ibuf + input_offset;
-                    fast.avail_in = static_cast<unsigned>(chunk);
-                    input_offset += chunk;
-                }
-                if (fast.avail_out == 0 &&
-                    static_cast<size_t>(fast.total_out) <
-                        static_cast<size_t>(direct_size)) {
-                    size_t available = std::min<size_t>(
-                        static_cast<size_t>(direct_size) - fast.total_out,
-                        UINT_MAX);
-                    fast.next_out = output + fast.total_out;
-                    fast.avail_out = static_cast<unsigned>(available);
-                }
-                if (fast.avail_out == 0)
-                    break;
-
-                int flush = input_offset == ibuflen ? Z_FINISH : Z_NO_FLUSH;
-                fast_ret = inflate(&fast, flush);
-                if (fast_ret == Z_STREAM_END)
-                    break;
-                if (fast_ret != Z_OK && fast_ret != Z_BUF_ERROR)
-                    break;
-                if (fast_ret == Z_BUF_ERROR && fast.avail_in == 0 &&
-                    input_offset == ibuflen)
-                    break;
-            }
+            status = pigzpp_gzip_decompress_into(input, size, output,
+                                                 static_cast<size_t>(bufsize), &written);
         }
-
-        const size_t actual_size = static_cast<size_t>(fast.total_out);
-        inflateEnd(&fast);
-        if (fast_ret == Z_STREAM_END &&
-            actual_size == static_cast<size_t>(direct_size))
-            return direct;
-        // A wrong size hint, concatenated member, or malformed stream falls
-        // through to the growable path, which preserves the existing behavior.
+        if (status == PIGZPP_DECOMPRESS_OK) {
+            if (written == static_cast<size_t>(bufsize))
+                return direct;
+            return nb::bytes(output, written);
+        }
+        if (status != PIGZPP_DECOMPRESS_OUTPUT_TOO_SMALL)
+            throw std::runtime_error("pigzpp: decompression failed");
     }
 
-    if (bufsize <= 0) {
-        if (trailer_size > 0) {
-            bufsize = static_cast<Py_ssize_t>(trailer_size);
-            if (static_cast<size_t>(bufsize) < ibuflen)
-                bufsize = static_cast<Py_ssize_t>(ibuflen * 4);
-            bufsize += 256;
-        } else {
-            bufsize = static_cast<Py_ssize_t>(std::max<size_t>(ibuflen * 8, 262144));
-        }
-    }
-
-    z_stream strm{};
-    strm.zalloc = Z_NULL;
-    strm.zfree = Z_NULL;
-    strm.opaque = Z_NULL;
-    int ret = inflateInit2(&strm, 15 + 32);  // auto-detect gzip/zlib
-    if (ret != Z_OK)
-        throw std::runtime_error("inflateInit2 failed");
-
-    std::vector<uint8_t> result(static_cast<size_t>(bufsize));
-    size_t input_offset = 0;
-    std::string error;
+    pigzpp_buffer decoded;
     {
         nb::gil_scoped_release release;
-        for (;;) {
-            if (strm.avail_in == 0 && input_offset < ibuflen) {
-                size_t chunk = std::min<size_t>(ibuflen - input_offset, UINT_MAX);
-                strm.next_in = ibuf + input_offset;
-                strm.avail_in = static_cast<unsigned>(chunk);
-                input_offset += chunk;
-            }
-            if (strm.avail_out == 0) {
-                size_t used = static_cast<size_t>(strm.total_out);
-                if (used == result.size()) {
-                    if (result.size() > std::numeric_limits<size_t>::max() / 2) {
-                        error = "inflate output is too large";
-                        break;
-                    }
-                    result.resize(std::max<size_t>(result.size() * 2, 262144));
-                }
-                size_t available = std::min<size_t>(result.size() - used, UINT_MAX);
-                strm.next_out = result.data() + used;
-                strm.avail_out = static_cast<unsigned>(available);
-            }
-
-            int flush = (input_offset == ibuflen && strm.avail_in == 0)
-                            ? Z_FINISH : Z_NO_FLUSH;
-            ret = inflate(&strm, flush);
-            if (ret == Z_STREAM_END)
-                break;
-            if (ret != Z_OK && ret != Z_BUF_ERROR) {
-                error = strm.msg ? strm.msg : "unknown error";
-                break;
-            }
-            if (ret == Z_BUF_ERROR && flush == Z_FINISH && strm.avail_out > 0) {
-                error = "unexpected end of compressed data";
-                break;
-            }
-        }
+        decoded = pigzpp_gzip_decompress(input, size, 1);
     }
-
-    size_t out_size = static_cast<size_t>(strm.total_out);
-    inflateEnd(&strm);
-    if (!error.empty())
-        throw std::runtime_error("inflate failed: " + error);
-    return nb::bytes(result.data(), out_size);
+    const auto free_decoded = [decoded](uint8_t*) { pigzpp_free(decoded); };
+    const std::unique_ptr<uint8_t, decltype(free_decoded)> output(decoded.data, free_decoded);
+    if (decoded.error)
+        throw std::runtime_error(decoded.error);
+    return nb::bytes(output.get(), decoded.size);
 }
 
 static bool is_c_contiguous_image(const Py_buffer& info) {
@@ -974,8 +881,8 @@ NB_MODULE(_pigzpp, m) {
             "Compress a bytes-like object and return raw DEFLATE bytes.");
         m.def("decompress", &pigzpp_decompress,
             nb::arg("data"), nb::arg("bufsize") = 0,
-            "Decompress a gzip or zlib bytes-like object. Single-stream "
-            "inflate is sequential; bufsize is only an optional output-size hint.");
+            "Decompress a gzip or zlib bytes-like object, including concatenated gzip "
+            "members. bufsize is only an optional output-size hint.");
 
     auto png_module = m.def_submodule("png", "Fast PNG encode/decode helpers");
     png_module.def(

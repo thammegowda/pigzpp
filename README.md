@@ -1,6 +1,6 @@
 # pigzpp — Parallel gzip, rewritten in C++23
 
-**pigzpp is fast, parallel compression for your whole stack.** It's a drop-in replacement for `gzip`/`pigz` on the command line — *and* a proper library you can call from **Python, WebAssembly, C++, Go, and Rust**, with native **ZIP archives** and **PNG** encode/decode built on the same SIMD-accelerated ([zlib-ng](https://github.com/zlib-ng/zlib-ng)) and hand-tuned-assembly ([ISA-L](https://github.com/intel/isa-l)) DEFLATE core.
+**pigzpp is fast, parallel compression for your whole stack.** It's a drop-in replacement for `gzip`/`pigz` on the command line — *and* a proper library you can call from **Python, WebAssembly, C++, Go, Rust, and .NET**, with native **ZIP archives** and **PNG** encode/decode built on the same SIMD-accelerated ([zlib-ng](https://github.com/zlib-ng/zlib-ng)) and hand-tuned-assembly ([ISA-L](https://github.com/intel/isa-l)) DEFLATE core.
 
 ### Highlights — at a glance
 
@@ -29,7 +29,7 @@ pigz is one of those essential tools — if you've ever compressed GBs to TBs of
 - **Faster** — [zlib-ng](https://github.com/zlib-ng/zlib-ng) (SIMD) and [ISA-L](https://github.com/intel/isa-l) (hand-tuned assembly) DEFLATE backends, parallelized across cores
 - **Selectable backend** — `auto` (ISA-L, fastest, x86-64 only), `zlib` (zlib-ng, best ratio, all platforms), or `isal`, via API and the `--engine` CLI flag
 - **Thread-safe library** — no global state, run many compress/decompress operations in one process
-- **Bindings for many languages** — Python (nanobind), C++, WebAssembly (Embind), Go (cgo), and Rust (FFI), all sharing one accelerated core
+- **Bindings for many languages** — Python (nanobind), C++, WebAssembly (Embind), Go (cgo), Rust (FFI), and .NET (P/Invoke), all sharing one accelerated core
 - **ZIP archives** — native multi-entry ZIP (STORED + DEFLATE, Zip64) with a `zipfile`-like Python API, interoperable with `zipfile`/`unzip`
 - **PNG helpers** — encode/decode grayscale, grayscale+alpha, RGB, and RGBA image buffers
 - **Fully compatible** — compress with pigzpp, decompress with gzip/pigz, and vice versa
@@ -179,7 +179,7 @@ PyPI publication uses trusted publishing and runs only for version tags after al
 
 ## Build
 
-Requires CMake 3.20+, a C++23 compiler (GCC 13+, Clang 17+, or a recent MSVC), and Python 3.12+ (for the Python module). The optional bindings each need their own toolchain: **Emscripten** (WebAssembly), **Go 1.22+** (cgo), or **Rust 1.75+** (FFI) — see [Building the language bindings](#building-the-language-bindings).
+Requires CMake 3.20+, a C++23 compiler (GCC 13+, Clang 17+, or a recent MSVC), and Python 3.12+ (for the Python module). The optional bindings each need their own toolchain: **Emscripten** (WebAssembly), **Go 1.22+** (cgo), **Rust 1.75+** (FFI), or **.NET 8+** (P/Invoke) — see [Building the language bindings](#building-the-language-bindings).
 
 ```bash
 git clone --recursive https://github.com/thammegowda/pigzpp.git
@@ -203,6 +203,7 @@ make test           # Run C++ and Python tests
 make bench          # Run all benchmarks (CLI + Python)
 make bench-bin      # Benchmark CLI: gzip vs pigz vs pigzpp vs igzip
 make bench-py       # Benchmark Python: gzip vs zlib-ng vs isal vs pigzpp
+make bench-dotnet   # Benchmark .NET: GZipStream vs SharpZipLib vs LibDeflate.NET vs pigzpp
 make bench-png      # Benchmark PNG encoding vs Pillow baseline
 make debug          # Debug build with sanitizers
 make clean          # Remove build artifacts
@@ -218,14 +219,14 @@ make clean          # Remove build artifacts
 pip install .
 ```
 
-**C ABI shared library** — the Go and Rust bindings link against `libpigzppc.so`:
+**C ABI shared library** — the Go, Rust, and .NET bindings link against `pigzppc`:
 
 ```bash
 cmake -DPIGZPP_BUILD_CAPI=ON -S . -B build
-cmake --build build --target pigzppc      # -> build/libpigzppc.so
+cmake --build build --config Release --target pigzppc # -> build/libpigzppc.so or pigzppc.dll
 ```
 
-The Go module lives in `src/go` and the Rust crate in `src/rust`; both locate `libpigzppc.so` in `build/` (override with `PIGZPP_BUILD_DIR` for Rust). Run `go test ./...` in `src/go` or `cargo test` in `src/rust` to verify.
+The Go module lives in `src/go`, the Rust crate in `src/rust`, and the .NET (`netstandard2.0`) project in `src/dotnet`. Run `go test ./...` in `src/go`, `cargo test` in `src/rust`, or `make test-dotnet` (which uses `build-dotnet/` for native and managed outputs) to verify.
 
 **WebAssembly** (Emscripten) — activate the emsdk, then run the build script:
 
@@ -341,6 +342,19 @@ let png = pigzpp::png_encode(&pixels, w, h, channels, 6, "rle", "up")?;
 # Cargo.toml — links libpigzppc (set PIGZPP_BUILD_DIR if not ../../build)
 pigzpp = { path = "path/to/pigzpp/src/rust" }
 ```
+
+### .NET
+
+```csharp
+using Pigzpp;
+
+byte[] gz = Pigzpp.Pigzpp.GzipCompress(data, level: 6, threads: 0);
+byte[] raw = Pigzpp.Pigzpp.GzipDecompress(gz);
+Pigzpp.Pigzpp.CompressFile("in.bin", "in.bin.gz", overwriteExisting: true,
+    progress: (total, read, written, ms) => { /* ~200 ms updates */ });
+```
+
+See [`src/dotnet/README.md`](src/dotnet/README.md) for setup and usage.
 
 ### WebAssembly
 

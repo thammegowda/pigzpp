@@ -106,6 +106,38 @@ jobs:
         working-directory: src/rust
         run: cargo test --release
 
+  # .NET binding (P/Invoke -> libpigzppc.so / pigzppc.dll).
+  dotnet:
+    name: .NET binding (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y nasm cmake ninja-build
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
+      - name: Build C ABI shared library
+        run: >
+          cmake -S . -B build-dotnet
+          -DCMAKE_BUILD_TYPE=Release
+          -DPIGZPP_BUILD_CAPI=ON
+          -DPIGZPP_USE_ISAL=${{ runner.os == 'Linux' && 'ON' || 'OFF' }}
+          -DPIGZPP_BUILD_CLI=OFF
+          -DPIGZPP_BUILD_PYTHON=OFF
+          -DPIGZPP_BUILD_TESTS=OFF
+          -DPIGZPP_STATIC=OFF
+          && cmake --build build-dotnet --config Release --target pigzppc --parallel 4
+      - name: Run .NET tests
+        run: dotnet test tests/dotnet/Pigzpp.Tests.csproj -c Release --artifacts-path build-dotnet/dotnet
+
   # WebAssembly (Emscripten) module + Node smoke test.
   wasm:
     name: WebAssembly module

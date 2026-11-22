@@ -1,0 +1,144 @@
+using System;
+using System.IO;
+using System.IO.Compression;
+using Xunit;
+
+namespace Pigzpp.Tests;
+
+public sealed class CapiTests : IDisposable {
+    readonly string _dir = Directory.CreateTempSubdirectory("pigzpp-dotnet").FullName;
+
+    public void Dispose() => Directory.Delete(_dir, true);
+
+    static byte[] Sample(int n) {
+        var rnd = new Random(42);
+        var b = new byte[n];
+        for (int i = 0; i < n; i++)
+            b[i] = (byte)(i % 7 == 0 ? rnd.Next(256) : 'a' + i % 5);
+        return b;
+    }
+
+    [Fact]
+    public void NativeLibraryIsAvailable() => Assert.True(Pigzpp.IsAvailable());
+
+    [Theory]
+    [InlineData(Engine.Auto)]
+    [InlineData(Engine.Zlib)]
+    public void GzipRoundTrip(Engine engine) {
+        var data = Sample(500_000);
+        var gz = Pigzpp.GzipCompress(data, 6, 2, engine);
+        Assert.True(gz.Length < data.Length);
+        Assert.Equal(0x1f, gz[0]);
+        Assert.Equal(0x8b, gz[1]);
+        Assert.Equal(data, Pigzpp.GzipDecompress(gz));
+    }
+
+    [Fact]
+    public void DotnetGzipToPigzppDecompress() {
+        var data = Sample(300_000);
+        using var ms = new MemoryStream();
+        using (var gz = new GZipStream(ms, CompressionLevel.Optimal, leaveOpen: true))
+            gz.Write(data, 0, data.Length);
+        Assert.Equal(data, Pigzpp.GzipDecompress(ms.ToArray()));
+    }
+
+    [Theory]
+    [InlineData(Engine.Auto)]
+    [InlineData(Engine.Zlib)]
+    public void PigzppCompressToDotnetGzipDecompress(Engine engine) {
+        var data = Sample(300_000);
+        var compressed = Pigzpp.GzipCompress(data, 6, 2, engine);
+        using var gz = new GZipStream(new MemoryStream(compressed), CompressionMode.Decompress);
+        using var output = new MemoryStream();
+        gz.CopyTo(output);
+        Assert.Equal(data, output.ToArray());
+    }
+
+    [Fact]
+    public void GzipEmptyRoundTrip() =>
+        Assert.Empty(Pigzpp.GzipDecompress(Pigzpp.GzipCompress(Array.Empty<byte>())));
+
+    [Fact]
+    public void GzipDecompressIntoDestinationAndConcatenated() {
+        var a = Sample(4096);
+        var b = Sample(8192);
+        var gzA = Pigzpp.GzipCompress(a);
+        var gzB = Pigzpp.GzipCompress(b);
+
+        var dst = new byte[a.Length];
+        Assert.Equal(a.Length, Pigzpp.GzipDecompress(gzA, dst));
+        Assert.Equal(a, dst);
+        Assert.Throws<PigzppException>(() => Pigzpp.GzipDecompress(gzA, new byte[a.Length - 1]));
+        Assert.Throws<ArgumentException>(() => Pigzpp.GzipDecompress(gzA, gzA));
+
+        // Concatenated multi-member gzip overflows the single-member ISIZE hint
+        // and falls back cleanly to the growable C++ path.
+        var joined = new byte[gzA.Length + gzB.Length];
+        Buffer.BlockCopy(gzA, 0, joined, 0, gzA.Length);
+        Buffer.BlockCopy(gzB, 0, joined, gzA.Length, gzB.Length);
+        var expected = new byte[a.Length + b.Length];
+        Buffer.BlockCopy(a, 0, expected, 0, a.Length);
+        Buffer.BlockCopy(b, 0, expected, a.Length, b.Length);
+        Assert.Equal(expected, Pigzpp.GzipDecompress(joined));
+        dst = new byte[expected.Length];
+        Assert.Equal(expected.Length, Pigzpp.GzipDecompress(joined, dst));
+        Assert.Equal(expected, dst);
+    }
+
+    [Fact]
+    public void DecompressGarbageThrows() =>
+        Assert.Throws<PigzppException>(
+            () => Pigzpp.GzipDecompress(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 }));
+
+    [Fact]
+    public void NullArgumentThrows() =>
+        Assert.Throws<ArgumentNullException>(() => Pigzpp.GzipCompress(null!));
+
+    [Fact]
+    public void InvalidLevelThrows() =>
+        Assert.Throws<PigzppException>(
+            () => Pigzpp.GzipCompress(Sample(1024), level: -2, threads: 4));
+
+    [Theory]
+    [InlineData(Format.Gzip)]
+    [InlineData(Format.Zlib)]
+    [InlineData(Format.Zip)]
+    [InlineData(Format.Raw)]
+    public void CompressFileFormats(Format format) {
+        var src = Path.Combine(_dir, "in.bin");
+        var dst = Path.Combine(_dir, "out.bin");
+        File.WriteAllBytes(src, Sample(100_000));
+        ulong lastTotal = 0;
+        Pigzpp.CompressFile(src, dst, false, 6, 2, format, (t, r, w, e) => lastTotal = t);
+        Assert.True(new FileInfo(dst).Length > 0);
+        Assert.Equal(100_000UL, lastTotal);
+        if (format == Format.Gzip)
+            Assert.Equal(File.ReadAllBytes(src), Pigzpp.GzipDecompress(File.ReadAllBytes(dst)));
+    }
+
+    [Fact]
+    public void CompressFileOverwriteRules() {
+        var src = Path.Combine(_dir, "in.bin");
+        var dst = Path.Combine(_dir, "out.gz");
+        File.WriteAllBytes(src, Sample(1000));
+        Pigzpp.CompressFile(src, dst);
+        Assert.Throws<PigzppException>(() => Pigzpp.CompressFile(src, dst));
+        Pigzpp.CompressFile(src, dst, overwriteExisting: true);
+    }
+
+    [Fact]
+    public void CompressFileUnicodePaths() {
+        var subdir = Directory.CreateDirectory(Path.Combine(_dir, "\u76ee\u5f55")).FullName;
+        var src = Path.Combine(subdir, "\u6587\u4ef6-\U0001f600.bin");
+        var dst = Path.Combine(subdir, "\u538b\u7f29.gz");
+        var data = Sample(1000);
+        File.WriteAllBytes(src, data);
+        Pigzpp.CompressFile(src, dst);
+        Assert.Equal(data, Pigzpp.GzipDecompress(File.ReadAllBytes(dst)));
+    }
+
+    [Fact]
+    public void CompressFileMissingInputThrows() =>
+        Assert.Throws<PigzppException>(
+            () => Pigzpp.CompressFile(Path.Combine(_dir, "nope"), Path.Combine(_dir, "out.gz")));
+}
