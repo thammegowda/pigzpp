@@ -109,3 +109,22 @@ native and managed outputs. To run against a custom native build directory:
 ```sh
 dotnet test tests/dotnet/Pigzpp.Tests.csproj -c Release --artifacts-path build-dotnet/dotnet -p:PigzppBuildDir=<build dir>
 ```
+
+## Benchmarks
+
+Compare `Pigzpp` against `.NET`'s `GZipStream` (`zlib-ng`), `LibDeflate.NET`, and
+`SharpZipLib` on the 128 MiB multilingual text corpus (level 6, 8 threads):
+
+```sh
+make bench-dotnet
+```
+
+Measured on an Intel Xeon Platinum 8573C (WSL2 Linux x64, .NET 10, 128 MiB text, L6, 8 threads):
+
+| method | compress MB/s | ratio | decompress MB/s |
+|---|---:|---:|---:|
+| **pigzpp `isal`** | **1262** | 2.58 | 293 |
+| **pigzpp `zlib`** | **277** | 2.81 | 293 |
+| `LibDeflate.NET` (1 thread) | 54 | 2.84 | **614** |
+| `System.IO.Compression.GZipStream` (1 thread) | 17 | 2.83 | 187 |
+| `SharpZipLib` (managed C#, 1 thread) | 12 | 2.83 | 165 |

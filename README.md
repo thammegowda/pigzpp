@@ -203,6 +203,7 @@ make test           # Run C++ and Python tests
 make bench          # Run all benchmarks (CLI + Python)
 make bench-bin      # Benchmark CLI: gzip vs pigz vs pigzpp vs igzip
 make bench-py       # Benchmark Python: gzip vs zlib-ng vs isal vs pigzpp
+make bench-dotnet   # Benchmark .NET: GZipStream vs SharpZipLib vs LibDeflate.NET vs pigzpp
 make bench-png      # Benchmark PNG encoding vs Pillow baseline
 make debug          # Debug build with sanitizers
 make clean          # Remove build artifacts

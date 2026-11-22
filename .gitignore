@@ -20,4 +20,6 @@ src/dotnet/bin/
 src/dotnet/obj/
 tests/dotnet/bin/
 tests/dotnet/obj/
+benchmarks/dotnet/bin/
+benchmarks/dotnet/obj/
 nul
